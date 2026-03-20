@@ -22,6 +22,7 @@ from typing import Optional
 
 import httpx
 import yfinance as yf
+from mnb import Mnb as MnbClient
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import HTMLResponse
 
@@ -1208,6 +1209,117 @@ async def yfinance_history(
 
 
 # ---------------------------------------------------------------------------
+# MNB — Magyar Nemzeti Bank official exchange rates
+# ---------------------------------------------------------------------------
+_mnb_client = None
+
+
+def _get_mnb():
+    global _mnb_client
+    if _mnb_client is None:
+        _mnb_client = MnbClient()
+    return _mnb_client
+
+
+@mcp.tool()
+def mnb_current_rates(
+    currencies: str = "",
+) -> str:
+    """Get current official MNB (Hungarian National Bank) exchange rates for HUF.
+
+    Args:
+        currencies: Comma-separated currency codes to filter (e.g. "EUR,USD,GBP").
+                    Empty = all 32 active currencies. Available: EUR, USD, GBP, CHF, JPY,
+                    CZK, PLN, RON, HRK, SEK, NOK, DKK, AUD, CAD, CNY, TRY, etc.
+
+    Returns:
+        JSON with official MNB HUF exchange rates (1 unit of foreign currency = X HUF).
+    """
+    try:
+        client = _get_mnb()
+        day = client.get_current_exchange_rates()
+
+        rates = day.rates
+        if currencies:
+            wanted = {c.strip().upper() for c in currencies.split(",")}
+            rates = [r for r in rates if r.currency in wanted]
+
+        result = {
+            "date": day.date.isoformat(),
+            "source": "Magyar Nemzeti Bank (MNB)",
+            "base": "HUF",
+            "count": len(rates),
+            "rates": [{"currency": r.currency, "rate": r.rate} for r in rates],
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def mnb_historical_rates(
+    start_date: str,
+    end_date: str,
+    currencies: str = "EUR,USD",
+) -> str:
+    """Get historical MNB exchange rates for a date range.
+
+    Args:
+        start_date: Start date YYYY-MM-DD (e.g. "2024-01-01"). Data available from 1949-01-03.
+        end_date: End date YYYY-MM-DD (e.g. "2024-12-31")
+        currencies: Comma-separated currency codes (e.g. "EUR,USD,CHF"). Default: "EUR,USD"
+
+    Returns:
+        JSON with daily MNB rates. Note: no rates on weekends/holidays.
+    """
+    from datetime import date as date_type
+
+    try:
+        start = date_type.fromisoformat(start_date)
+        end = date_type.fromisoformat(end_date)
+    except ValueError:
+        return json.dumps({"error": "Invalid date format. Use YYYY-MM-DD."}, indent=2)
+
+    curr_list = [c.strip().upper() for c in currencies.split(",") if c.strip()]
+    if not curr_list:
+        curr_list = ["EUR", "USD"]
+
+    try:
+        client = _get_mnb()
+        days = client.get_exchange_rates(start, end, curr_list)
+
+        rows = []
+        for day in days:
+            row = {"date": day.date.isoformat()}
+            for r in day.rates:
+                row[r.currency] = r.rate
+            rows.append(row)
+
+        # Sort chronologically
+        rows.sort(key=lambda r: r["date"])
+
+        # Truncate
+        truncated = False
+        if len(rows) > 500:
+            rows = rows[-500:]
+            truncated = True
+
+        return json.dumps({
+            "source": "Magyar Nemzeti Bank (MNB)",
+            "currencies": curr_list,
+            "start": start_date,
+            "end": end_date,
+            "data_points": len(rows),
+            "truncated_to_last_500": truncated,
+            "data": rows,
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Landing page
 # ---------------------------------------------------------------------------
 LANDING_HTML = """<!DOCTYPE html>
@@ -1335,14 +1447,16 @@ LANDING_HTML = """<!DOCTYPE html>
 <div class="content">
 <div class="hero">
   <h1>Statisztikai Adatok MCP a Makronóm Intézet Kutatóinak</h1>
-  <p class="sub">Eurostat, KSH, DBnomics és Yahoo Finance adatok elérése<br>
+  <p class="sub">Eurostat, KSH, DBnomics, MNB, ECB és Yahoo Finance adatok elérése<br>
      AI asszisztenseken keresztül — egy kattintással.</p>
   <div class="sources">
     <span>Eurostat</span>
     <span>KSH STADAT</span>
     <span>DBnomics</span>
-    <span>IMF</span>
+    <span>MNB</span>
     <span>ECB</span>
+    <span>FED</span>
+    <span>IMF</span>
     <span>OECD</span>
     <span>World Bank</span>
     <span>Yahoo Finance</span>
@@ -1398,6 +1512,8 @@ LANDING_HTML = """<!DOCTYPE html>
     <tr><td>dbnomics_providers</td><td>DBnomics adatszolgáltatók listája</td></tr>
     <tr><td>yfinance_quote</td><td>Aktuális árfolyam (részvény, deviza, áru, index, BUX)</td></tr>
     <tr><td>yfinance_history</td><td>Historikus árfolyamadatok (napi/heti/havi OHLCV)</td></tr>
+    <tr><td>mnb_current_rates</td><td>Hivatalos MNB árfolyamok (HUF, 32 deviza)</td></tr>
+    <tr><td>mnb_historical_rates</td><td>MNB historikus árfolyamok (1949-től)</td></tr>
   </table>
 </div>
 
