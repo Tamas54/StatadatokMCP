@@ -243,6 +243,7 @@ def _parse_json_stat(data: dict) -> dict:
 # ---------------------------------------------------------------------------
 KSH_BASE = "https://data.ksh.hu"
 _ksh_datasets_cache: list[dict] = []
+_ksh_datasets_loaded_at: float = 0.0
 
 
 def _parse_sdmx_compact(xml_text: str, max_rows: int = 200) -> list[dict]:
@@ -298,9 +299,10 @@ def _parse_sdmx_compact(xml_text: str, max_rows: int = 200) -> list[dict]:
 
 
 async def _load_ksh_datasets() -> list[dict]:
-    """Load KSH High-Value Datasets list."""
-    global _ksh_datasets_cache
-    if _ksh_datasets_cache:
+    """Load KSH High-Value Datasets list (24h cache)."""
+    global _ksh_datasets_cache, _ksh_datasets_loaded_at
+    now = time.time()
+    if _ksh_datasets_cache and (now - _ksh_datasets_loaded_at < _CACHE_TTL):
         return _ksh_datasets_cache
 
     client = await get_client()
@@ -308,6 +310,7 @@ async def _load_ksh_datasets() -> list[dict]:
         resp = await client.get(f"{KSH_BASE}/datasets.json")
         resp.raise_for_status()
         _ksh_datasets_cache = resp.json()
+        _ksh_datasets_loaded_at = now
         logger.info(f"Loaded {len(_ksh_datasets_cache)} KSH datasets")
     except Exception as e:
         logger.error(f"Failed to load KSH datasets: {e}")
@@ -320,12 +323,14 @@ async def _load_ksh_datasets() -> list[dict]:
 # ---------------------------------------------------------------------------
 DBNOMICS_BASE = "https://api.db.nomics.world/v22"
 _dbnomics_providers_cache: list[dict] = []
+_dbnomics_providers_loaded_at: float = 0.0
 
 
 async def _load_dbnomics_providers() -> list[dict]:
-    """Load list of DBnomics data providers."""
-    global _dbnomics_providers_cache
-    if _dbnomics_providers_cache:
+    """Load list of DBnomics data providers (24h cache)."""
+    global _dbnomics_providers_cache, _dbnomics_providers_loaded_at
+    now = time.time()
+    if _dbnomics_providers_cache and (now - _dbnomics_providers_loaded_at < _CACHE_TTL):
         return _dbnomics_providers_cache
 
     client = await get_client()
@@ -335,6 +340,7 @@ async def _load_dbnomics_providers() -> list[dict]:
         data = resp.json()
         providers = data.get("providers", {}).get("docs", [])
         _dbnomics_providers_cache = providers
+        _dbnomics_providers_loaded_at = now
         logger.info(f"Loaded {len(providers)} DBnomics providers")
     except Exception as e:
         logger.error(f"Failed to load DBnomics providers: {e}")
@@ -933,48 +939,118 @@ async def dbnomics_series(
 # ---------------------------------------------------------------------------
 KSH_STADAT_BASE = "https://www.ksh.hu/stadat_files"
 
-# Curated catalog of most useful STADAT tables
+# Curated catalog of STADAT tables — updated 2026-03-21 via KSH deep research
+# NOTE: KSH reorganized prefixes: kul→kkr, ksk→bel, pen→gov, wages ber→mun
 KSH_STADAT_CATALOG = {
-    # GDP, national accounts
-    "gdp0001": "GDP és fő összetevői (termelési oldalról)",
-    "gdp0002": "GDP és fő összetevői (felhasználási oldalról)",
-    "gdp0003": "A bruttó hazai termék (GDP) értéke és volumenindexe",
-    "gdp0086": "Egy főre jutó bruttó hazai termék (GDP)",
-    # Prices, inflation
-    "ara0001": "A fogyasztói árindex alakulása (havi)",
-    "ara0002": "A fogyasztói árindex árucikkcsoportonként",
-    "ara0003": "Maginfláció, járulékalapú mutató",
-    "ara0006": "Ipari termelői árindex",
-    "ara0009": "Építőipari árindexek",
-    "ara0011": "Üzemanyagárak",
-    # Labor market
-    "mun0001": "A foglalkoztatottak és munkanélküliek száma",
-    "mun0008": "Foglalkoztatási és munkanélküliségi ráta",
-    "mun0012": "Üres álláshelyek",
-    # Wages
-    "ber0001": "Bruttó és nettó átlagkereset",
-    "ber0002": "Reálkereset-index",
-    "ber0150": "Bruttó átlagkereset nemzetgazdasági áganként",
-    # Industry
-    "ipa0001": "Az ipari termelés volumenindexe",
-    "ipa0002": "Ipari termelés ágazatonként",
-    # Construction
-    "epi0001": "Építőipari termelés volumenindexe",
-    # Trade
-    "ksk0001": "Kiskereskedelmi forgalom volumenindexe",
-    "kul0001": "Külkereskedelmi termékforgalom",
-    "kul0002": "Behozatal és kivitel értéke",
-    # Tourism
-    "tur0001": "Kereskedelmi szálláshelyek forgalma",
-    # Energy
-    "ene0001": "Energiafelhasználás",
-    # Demographics
-    "nep0001": "Népesség, népmozgalom",
-    "nep0003": "Születések és halálozások száma",
-    "nep0007": "Vándorlás",
-    # Finance
-    "pen0001": "Államháztartás bevételei és kiadásai",
-    "pen0006": "Államadósság",
+    # --- GDP, national accounts (gdp) ---
+    "gdp0001": "A bruttó hazai termék (GDP) értéke és volumenváltozása",
+    "gdp0002": "A bruttó hazai termék (GDP) termelése (éves)",
+    "gdp0003": "A bruttó hazai termék (GDP) felhasználása (éves)",
+    "gdp0004": "A GDP értéke HUF, EUR, USD és PPP formában",
+    "gdp0005": "Az egy főre jutó bruttó hazai termék (GDP)",
+    "gdp0006": "Bruttó hozzáadott érték nemzetgazdasági áganként",
+    "gdp0007": "Bruttó hozzáadott érték volumenindexei",
+    "gdp0008": "A GDP felhasználásának összetevői (folyó áron)",
+    "gdp0009": "A GDP felhasználásának volumenindexei",
+    "gdp0010": "A GDP termelése (negyedéves)",
+    "gdp0021": "Szezonálisan kiigazított GDP volumenindexek",
+    # --- Prices, inflation (ara) ---
+    "ara0001": "A fogyasztói árindex alakulása (éves)",
+    "ara0002": "Fogyasztóiár-indexek a főbb csoportok szerint (évközi)",
+    "ara0003": "Nyugdíjas fogyasztóiár-index (éves)",
+    "ara0004": "Maginfláció és szezonális élelmiszerek nélküli index",
+    "ara0007": "Egyes termékek és szolgáltatások éves átlagos fogyasztói ára",
+    "ara0008": "Külkereskedelmi árindexek és cserearány",
+    "ara0012": "Mezőgazdasági termelőiár-indexek és az agrárolló",
+    "ara0014": "Gabonafélék felvásárlási átlagára",
+    "ara0028": "Ipari termelőiár-indexek (éves)",
+    "ara0031": "Építőipari termelőiár-indexek",
+    "ara0034": "Szolgáltatási kibocsátási árindexek (B2B)",
+    "ara0039": "Fogyasztóiár-indexek részletes kiadási csoportonként (havi)",
+    "ara0041": "Ipari termelőiár-indexek rendeltetés szerint (havi)",
+    "ara0044": "Mezőgazdasági termelőiár-indexek alakulása (havi)",
+    # --- Wages & earnings (mun prefix — KSH merged wages into mun!) ---
+    "mun0002": "Az átlagkeresetek alakulása (éves)",
+    "mun0003": "A nettó átlagkeresetek alakulása (éves)",
+    "mun0004": "A reálkereset alakulása",
+    "mun0025": "Teljes munkaidőben alkalmazásban állók bruttó átlagkeresete",
+    "mun0026": "Teljes munkaidőben alkalmazásban állók nettó átlagkeresete",
+    "mun0030": "Átlagkeresetek nemzetgazdasági áganként (havi)",
+    "mun0039": "Főbb kereseti adatok a munkáltatók teljes körénél",
+    "mun0044": "Közfoglalkoztatottak létszáma és átlagkeresete",
+    "mun0052": "Átlagkeresetek foglalkozások (FEOR) szerint",
+    "mun0058": "A bruttó keresetek mediánértéke",
+    # --- Labor market (mun) ---
+    "mun0001": "A munkaerőpiac legfontosabb éves mutatói",
+    "mun0005": "Foglalkoztatottak száma korcsoportok szerint",
+    "mun0006": "Foglalkoztatási ráta nemenként és korcsoportonként",
+    "mun0007": "Munkanélküliek száma és munkanélküliségi ráta",
+    "mun0008": "Gazdaságilag aktívak legmagasabb iskolai végzettség szerint",
+    "mun0009": "Gazdaságilag inaktívak száma és összetétele",
+    "mun0012": "Munkanélküliségi ráta vármegyénként (negyedéves)",
+    "mun0016": "A munkanélküliség időtartama",
+    "mun0021": "Foglalkoztatottak száma nemzetgazdasági áganként",
+    # --- Industry (ipa) ---
+    "ipa0001": "Az ipari termelés és értékesítés összefoglaló adatai",
+    "ipa0002": "Ipari termelés volumenindexei aláganként",
+    "ipa0003": "Ipari exportértékesítés volumenindexei",
+    "ipa0004": "Ipari belföldi értékesítés volumenindexei",
+    "ipa0008": "Fontosabb ipari termékek termelése",
+    "ipa0014": "Ipari termelés havi volumenindexei (szezonálisan kiigazított)",
+    "ipa0015": "Ipari termelékenység indexe",
+    "ipa0021": "Ipari termelés vármegyénként",
+    # --- Construction (epi) ---
+    "epi0001": "Építőipari termelés értéke és volumenindexe",
+    "epi0002": "Építőipari termelés építménycsoportonként",
+    "epi0003": "Építőipari szerződések állománya és volumene",
+    "epi0005": "Építőipari termelői árak alakulása",
+    "epi0006": "Lakásépítések és építési engedélyek száma",
+    "epi0011": "Építőipari termelés (negyedéves)",
+    # --- Retail / Internal trade (bel — was ksk!) ---
+    "bel0001": "Kiskereskedelmi forgalom értéke és volumenváltozása",
+    "bel0002": "Kiskereskedelmi üzlethálózat adatai",
+    "bel0003": "Élelmiszer jellegű vegyes kiskereskedelem forgalma",
+    "bel0004": "Nem élelmiszer-kiskereskedelmi elem forgalma",
+    "bel0005": "Gépjárműüzemanyag-kiskereskedelem forgalma",
+    "bel0006": "Csomagküldő és internetes kiskereskedelem forgalma",
+    "bel0012": "Kiskereskedelmi forgalom vármegyénként",
+    # --- Foreign trade (kkr — was kul!) ---
+    "kkr0001": "Külkereskedelmi termékforgalom összefoglaló adatai",
+    "kkr0002": "Külkereskedelmi mérleg alakulása",
+    "kkr0003": "Termékforgalom országcsoportok szerint",
+    "kkr0004": "Termékforgalom főbb árucsoportok (SITC) szerint",
+    "kkr0005": "Szolgáltatás-külkereskedelmi forgalom adatai",
+    "kkr0008": "Külkereskedelmi árindexek és cserearány-mutató",
+    "kkr0011": "Külkereskedelmi forgalom (havi)",
+    # --- Energy (ene) ---
+    "ene0001": "Elsődleges energiaforrások mérlege",
+    "ene0002": "Végső energiafelhasználás ágazatonként",
+    "ene0003": "Villamosenergia-mérleg adatai",
+    "ene0004": "Megújuló energiaforrások felhasználása",
+    "ene0005": "Földgáz- és kőolajfelhasználás adatai",
+    "ene0011": "Energiafelhasználás (havi)",
+    # --- Demographics (nep) ---
+    "nep0001": "A népesség száma és a népmozgalom főbb adatai",
+    "nep0002": "Élveszületések és halálozások száma (havi)",
+    "nep0003": "Házasságkötések és válások száma",
+    "nep0005": "A népesség korösszetétele és függőségi ráták",
+    "nep0007": "Születéskor várható átlagos élettartam",
+    "nep0011": "Belföldi és nemzetközi vándorlás",
+    "nep0015": "Népesség vármegyénként (január 1.)",
+    # --- Government finance (gov — was pen!) ---
+    "gov0001": "A kormányzati szektor egyenlege és adóssága",
+    "gov0002": "A kormányzati szektor bevételei és kiadásai",
+    "gov0003": "Az államadósság alakulása a GDP százalékában",
+    "gov0004": "Adó- és társadalombiztosítási bevételek",
+    "gov0011": "Kormányzati pénzügyek (negyedéves)",
+    # --- Tourism (tur) ---
+    "tur0001": "Turisztikai szálláshelyek főbb adatai",
+    "tur0002": "Vendégéjszakák száma és vendégforgalom (havi)",
+    "tur0003": "Szálláshelyek bevételei és kihasználtsága",
+    "tur0004": "A magyar lakosság utazási szokásai",
+    "tur0005": "Turisztikai kiadások és bevételek mérlege",
+    "tur0006": "Vendéglátóhelyek forgalma és száma",
+    "tur0012": "Vendégéjszakák száma vármegyénként",
 }
 
 
@@ -994,26 +1070,59 @@ def _parse_ksh_csv(text: str, max_rows: int = 500) -> dict:
     if len(lines) < 2:
         return {"error": "Too few lines in CSV"}
 
-    # First line is typically the table title — detect by counting non-empty fields
-    # Title line: "1.1.1.1. Title here;;;;;;;;" (1 non-empty, rest empty)
+    # Detect title lines vs header vs data.
+    # Title line: "1.1.1.1. Title here;;;;;;;;" (1-2 non-empty, rest empty)
     # Header line: "Év;Mutató1;Mutató2;..." (many non-empty)
+    # Multi-row headers: some tables have 2-3 header rows before data starts
     title = ""
     header_idx = 0
+
+    # Find where data starts: first line where col 0 looks like a year or numeric
+    def _looks_like_data(line_parts):
+        first = line_parts[0].strip().strip('"')
+        if re.match(r'^\d{4}$', first):
+            return True
+        # Also check if it's a section label (like "Együtt", "Férfi") — still data
+        if len(line_parts) > 2:
+            numeric_count = sum(1 for p in line_parts[1:4] if p.strip().strip('"').replace(",", "").replace(" ", "").replace("-", "").replace(".", "").isdigit())
+            if numeric_count >= 1:
+                return True
+        return False
+
+    # Scan forward to find header and data start
+    data_start = len(lines)
+    for i in range(min(len(lines), 10)):
+        parts_i = [p.strip() for p in lines[i].split(";")]
+        if _looks_like_data(parts_i):
+            data_start = i
+            break
+
+    # Title: first line if it has few non-empty fields
     parts0 = [p.strip() for p in lines[0].split(";")]
-    parts1 = [p.strip() for p in lines[1].split(";")] if len(lines) > 1 else []
     nonempty0 = sum(1 for p in parts0 if p)
-    nonempty1 = sum(1 for p in parts1 if p)
-    if nonempty0 < nonempty1:
+    if nonempty0 <= 2 and data_start > 1:
         title = parts0[0].strip('"')
         header_idx = 1
+    else:
+        header_idx = 0
 
-    header_line = lines[header_idx]
-    headers = [h.strip().strip('"') for h in header_line.split(";")]
+    # Merge multi-row headers (from header_idx to data_start-1)
+    header_parts = [p.strip().strip('"') for p in lines[header_idx].split(";")]
+    for extra_row in range(header_idx + 1, data_start):
+        extra_parts = [p.strip().strip('"') for p in lines[extra_row].split(";")]
+        for j in range(min(len(header_parts), len(extra_parts))):
+            if extra_parts[j]:
+                if header_parts[j]:
+                    header_parts[j] += " " + extra_parts[j]
+                else:
+                    header_parts[j] = extra_parts[j]
+
+    headers = header_parts
     while headers and not headers[-1]:
         headers.pop()
 
     rows = []
-    for line in lines[header_idx + 1:]:
+    for line in lines[data_start:]:
         if not line.strip():
             continue
         values = line.split(";")
@@ -1043,7 +1152,7 @@ def _parse_ksh_csv(text: str, max_rows: int = 500) -> dict:
         "title": title,
         "columns": headers,
         "row_count": len(rows),
-        "total_rows_in_file": len(lines) - header_idx - 1,
+        "total_rows_in_file": len(lines) - data_start,
         "truncated": len(rows) >= max_rows,
         "data": rows,
     }
@@ -1066,17 +1175,23 @@ async def get_ksh_stadat(
         max_rows: Maximum rows to return (default: 200, max: 1000)
 
     Common table codes:
-        ara0001 — Consumer price index (monthly)
-        ara0003 — Core inflation
-        ara0011 — Fuel prices
-        gdp0001 — GDP main components
-        gdp0086 — GDP per capita
-        mun0008 — Employment and unemployment rates
-        ber0001 — Gross and net average wages
-        ber0002 — Real wage index
-        kul0001 — Foreign trade
+        ara0001 — Consumer price index (annual)
+        ara0004 — Core inflation
+        ara0039 — CPI detailed monthly
+        gdp0001 — GDP value and volume change
+        gdp0005 — GDP per capita
+        mun0002 — Average wages (annual)
+        mun0004 — Real wages
+        mun0007 — Unemployment rate
+        mun0030 — Wages by sector (monthly)
+        ipa0001 — Industrial production
+        epi0001 — Construction output
+        bel0001 — Retail trade (was ksk!)
+        kkr0001 — Foreign trade (was kul!)
         nep0001 — Population and vital statistics
-        pen0006 — Government debt
+        gov0003 — Government debt % GDP (was pen!)
+        ene0001 — Energy balance
+        tur0001 — Tourism
 
     Returns:
         JSON with parsed data rows, Hungarian headers.
@@ -1112,7 +1227,12 @@ async def get_ksh_stadat(
         parsed = _parse_ksh_csv(text, max_rows)
         parsed["table_code"] = code
         parsed["url"] = url
-        parsed["description"] = KSH_STADAT_CATALOG.get(code, "")
+        # Use catalog description, but flag if CSV title doesn't match
+        catalog_desc = KSH_STADAT_CATALOG.get(code, "")
+        parsed["description"] = catalog_desc
+        if catalog_desc and parsed.get("title") and catalog_desc not in parsed["title"]:
+            # CSV title differs from catalog — trust the CSV
+            parsed["note"] = f"CSV title: {parsed['title']}"
 
         return json.dumps(parsed, ensure_ascii=False, indent=2)
 
