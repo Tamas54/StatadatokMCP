@@ -14,10 +14,13 @@ Tools:
   - dbnomics_series: Fetch time series data from DBnomics
 """
 
+import csv
+import io
 import os
 import json
 import logging
 import re
+import time
 from typing import Optional
 
 import httpx
@@ -60,14 +63,25 @@ EUROSTAT_TOC_URL = (
     "https://ec.europa.eu/eurostat/api/dissemination/catalogue/toc/txt?lang=en"
 )
 
-# Cache for TOC (in-memory, refreshed per server lifecycle)
+# Cache for TOC (in-memory, 24h TTL)
 _eurostat_toc_cache: list[dict] = []
+_eurostat_toc_loaded_at: float = 0.0
+_CACHE_TTL = 86400  # 24 hours
+
+
+def _strip_tsv_field(s: str) -> str:
+    """Strip whitespace and surrounding quotes from a TSV/CSV field."""
+    return s.strip().strip('"').strip()
 
 
 async def _load_eurostat_toc() -> list[dict]:
-    """Download and parse Eurostat Table of Contents (TSV text format)."""
-    global _eurostat_toc_cache
-    if _eurostat_toc_cache:
+    """Download and parse Eurostat Table of Contents (TSV text format).
+
+    The Eurostat TOC TSV has columns: title, code (title first!).
+    """
+    global _eurostat_toc_cache, _eurostat_toc_loaded_at
+    now = time.time()
+    if _eurostat_toc_cache and (now - _eurostat_toc_loaded_at < _CACHE_TTL):
         return _eurostat_toc_cache
 
     client = await get_client()
@@ -80,10 +94,14 @@ async def _load_eurostat_toc() -> list[dict]:
         for line in text.strip().split("\n"):
             parts = line.split("\t")
             if len(parts) >= 2:
-                code = parts[0].strip()
-                title = parts[1].strip() if len(parts) > 1 else ""
-                entries.append({"code": code, "title": title})
+                # TSV format: title\tcode (title is first column!)
+                title = _strip_tsv_field(parts[0])
+                code = _strip_tsv_field(parts[1])
+                # Skip header/category rows that don't look like dataset codes
+                if code and not code.startswith('"'):
+                    entries.append({"code": code, "title": title})
         _eurostat_toc_cache = entries
+        _eurostat_toc_loaded_at = now
         logger.info(f"Loaded {len(entries)} Eurostat TOC entries")
     except Exception as e:
         logger.error(f"Failed to load Eurostat TOC: {e}")
@@ -103,6 +121,7 @@ async def _load_eurostat_toc() -> list[dict]:
                 name_obj = f.get("Name", {})
                 title = name_obj if isinstance(name_obj, str) else name_obj.get("en", str(name_obj))
                 _eurostat_toc_cache.append({"code": code, "title": title})
+            _eurostat_toc_loaded_at = now
             logger.info(f"Loaded {len(_eurostat_toc_cache)} entries via SDMX fallback")
         except Exception as e2:
             logger.error(f"SDMX fallback also failed: {e2}")
@@ -111,17 +130,26 @@ async def _load_eurostat_toc() -> list[dict]:
 
 
 def _search_toc(entries: list[dict], query: str, limit: int = 20) -> list[dict]:
-    """Simple case-insensitive keyword search over TOC entries."""
+    """Case-insensitive keyword search with relevance scoring.
+
+    Uses OR logic with scoring: entries matching more keywords rank higher.
+    Entries matching ALL keywords come first, then partial matches.
+    """
     query_lower = query.lower()
     keywords = query_lower.split()
-    results = []
+    if not keywords:
+        return []
+
+    scored = []
     for entry in entries:
         text = f"{entry.get('code', '')} {entry.get('title', '')}".lower()
-        if all(kw in text for kw in keywords):
-            results.append(entry)
-        if len(results) >= limit:
-            break
-    return results
+        score = sum(1 for kw in keywords if kw in text)
+        if score > 0:
+            scored.append((score, entry))
+
+    # Sort by score descending (most keywords matched first)
+    scored.sort(key=lambda x: -x[0])
+    return [e for _, e in scored[:limit]]
 
 
 def _normalize_time_period(tp: str) -> str:
@@ -334,6 +362,13 @@ async def search_datasets(
     Returns:
         JSON with matching datasets including codes/IDs and titles.
     """
+    # Guard against empty query
+    if not query or not query.strip():
+        return json.dumps({
+            "error": "Please provide a search query",
+            "hint": "Examples: 'GDP', 'inflation Hungary', 'unemployment rate', 'consumer prices'",
+        }, ensure_ascii=False, indent=2)
+
     if source == "both":
         sources = {"eurostat", "ksh"}
     elif source == "all":
@@ -354,35 +389,36 @@ async def search_datasets(
     if "ksh" in sources:
         query_lower = query.lower()
         keywords = query_lower.split()
-        ksh_matches = []
+        ksh_scored = []
 
-        # Search STADAT catalog first (richer data)
+        # Search STADAT catalog with scoring (OR logic)
         for code, title in KSH_STADAT_CATALOG.items():
             text = f"{code} {title}".lower()
-            if all(kw in text for kw in keywords):
-                ksh_matches.append({
+            score = sum(1 for kw in keywords if kw in text)
+            if score > 0:
+                ksh_scored.append((score, {
                     "code": code,
                     "title": title,
                     "tool": "get_ksh_stadat",
                     "source": "ksh_stadat",
-                })
-            if len(ksh_matches) >= limit:
-                break
+                }))
 
         # Also search HVD datasets
         datasets = await _load_ksh_datasets()
         for ds in datasets:
             searchable = json.dumps(ds, ensure_ascii=False).lower()
-            if all(kw in searchable for kw in keywords):
-                ksh_matches.append({
+            score = sum(1 for kw in keywords if kw in searchable)
+            if score > 0:
+                ksh_scored.append((score, {
                     "id": ds.get("id", ""),
                     "title_hu": ds.get("titles", {}).get("hu", ""),
                     "tool": "get_ksh_data",
                     "source": "ksh_hvd",
-                })
-            if len(ksh_matches) >= limit:
-                break
-        results["ksh"] = ksh_matches
+                }))
+
+        # Sort by score and take top results
+        ksh_scored.sort(key=lambda x: -x[0])
+        results["ksh"] = [e for _, e in ksh_scored[:limit]]
 
     if "dbnomics" in sources:
         client = await get_client()
@@ -608,16 +644,35 @@ async def get_ksh_data(
                 "data": rows,
             }, ensure_ascii=False, indent=2)
         else:
-            # CSV format
-            lines = data_text.strip().split("\n")
-            if not lines:
+            # CSV format — auto-detect delimiter (semicolon or comma)
+            first_line = data_text.split("\n", 1)[0]
+            delimiter = ";" if first_line.count(";") > first_line.count(",") else ","
+
+            reader = csv.reader(io.StringIO(data_text), delimiter=delimiter)
+            all_rows = list(reader)
+            if not all_rows:
                 return json.dumps({"error": "Empty response"})
 
-            header = lines[0].split(",")
+            header = [h.strip() for h in all_rows[0]]
             rows = []
-            for line in lines[1:max_rows + 1]:
-                values = line.split(",")
-                row = {h.strip().strip('"'): v.strip().strip('"') for h, v in zip(header, values)}
+            for csv_row in all_rows[1:max_rows + 1]:
+                row = {}
+                for i, h in enumerate(header):
+                    if i < len(csv_row):
+                        val = csv_row[i].strip()
+                        # Try numeric conversion
+                        if val and val not in ("..", "…", "x", "-", ""):
+                            cleaned = val.replace("\xa0", "").replace(" ", "").replace(",", ".")
+                            try:
+                                row[h] = float(cleaned) if "." in cleaned else int(cleaned)
+                            except ValueError:
+                                row[h] = val
+                        elif val in ("..", "…", "x"):
+                            row[h] = None
+                        else:
+                            row[h] = val
+                    else:
+                        row[h] = None
                 rows.append(row)
 
             return json.dumps({
@@ -625,10 +680,10 @@ async def get_ksh_data(
                 "title": titles[0] if titles else "",
                 "data_url": data_url,
                 "format": "CSV",
-                "columns": [h.strip().strip('"') for h in header],
+                "columns": header,
                 "row_count": len(rows),
-                "total_rows_in_file": len(lines) - 1,
-                "truncated": len(lines) - 1 > max_rows,
+                "total_rows_in_file": len(all_rows) - 1,
+                "truncated": len(all_rows) - 1 > max_rows,
                 "data": rows,
             }, ensure_ascii=False, indent=2)
 
@@ -674,11 +729,14 @@ async def dbnomics_providers(
             "nb_series": p.get("nb_series", 0),
         })
 
-    return json.dumps(
-        {"total": len(result), "providers": result},
-        ensure_ascii=False,
-        indent=2,
-    )
+    output = {"total": len(result), "providers": result}
+    if query and not result:
+        output["hint"] = (
+            f"No providers matched '{query}'. "
+            "Provider names are usually organization names (e.g. 'IMF', 'ECB', 'OECD', 'World Bank'). "
+            "Try a broader term or use dbnomics_search to find data directly."
+        )
+    return json.dumps(output, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
@@ -765,9 +823,10 @@ async def dbnomics_series(
         Use dbnomics_search first to find provider and dataset codes.
 
     Examples:
-        IMF GDP growth: dbnomics_series("IMF", "WEO:latest", series_code="A.HU.NGDP_RPCH")
+        IMF GDP growth: dbnomics_series("IMF", "WEO:2024-10", query="Hungary NGDP_RPCH")
         ECB exchange rates: dbnomics_series("ECB", "EXR", dimensions='{"FREQ":["A"],"CURRENCY":["USD"]}')
-        AMECO unemployment: dbnomics_series("AMECO", "ZUTN", dimensions='{"geo":["ea19"]}')
+        Eurostat HICP: dbnomics_series("Eurostat", "prc_hicp_manr", dimensions='{"geo":["HU"],"coicop":["CP00"]}')
+        AMECO unemployment: dbnomics_series("AMECO", "ZUTN", query="Hungary")
     """
     limit = min(limit, 200)
     client = await get_client()
@@ -1095,12 +1154,20 @@ async def yfinance_quote(
         ticker = yf.Ticker(symbol)
         info = ticker.info
 
+        # Detect invalid/not-found symbols
+        price = info.get("regularMarketPrice") or info.get("previousClose")
+        if not price and not info.get("currency"):
+            return json.dumps({
+                "error": f"Symbol '{symbol}' not found or has no data",
+                "hint": "Check the symbol format. Examples: 'AAPL', 'OTP.BD', 'EURHUF=X', 'GC=F', '^BUX'",
+            }, indent=2)
+
         # Extract most useful fields
         result = {
             "symbol": symbol,
             "name": info.get("shortName") or info.get("longName", symbol),
             "currency": info.get("currency", ""),
-            "price": info.get("regularMarketPrice") or info.get("previousClose"),
+            "price": price,
             "previous_close": info.get("previousClose"),
             "open": info.get("regularMarketOpen") or info.get("open"),
             "day_high": info.get("regularMarketDayHigh") or info.get("dayHigh"),
@@ -1239,18 +1306,35 @@ def mnb_current_rates(
         client = _get_mnb()
         day = client.get_current_exchange_rates()
 
-        rates = day.rates
-        if currencies:
-            wanted = {c.strip().upper() for c in currencies.split(",")}
-            rates = [r for r in rates if r.currency in wanted]
+        all_rates = day.rates
+        available_currencies = sorted(r.currency for r in all_rates)
 
-        result = {
-            "date": day.date.isoformat(),
-            "source": "Magyar Nemzeti Bank (MNB)",
-            "base": "HUF",
-            "count": len(rates),
-            "rates": [{"currency": r.currency, "rate": r.rate} for r in rates],
-        }
+        if currencies:
+            wanted = {c.strip().upper() for c in currencies.split(",") if c.strip()}
+            rates = [r for r in all_rates if r.currency in wanted]
+            # Warn about unrecognized currencies
+            found = {r.currency for r in rates}
+            not_found = wanted - found
+            result = {
+                "date": day.date.isoformat(),
+                "source": "Magyar Nemzeti Bank (MNB)",
+                "base": "HUF",
+                "count": len(rates),
+                "rates": [{"currency": r.currency, "rate": r.rate} for r in rates],
+            }
+            if not_found:
+                result["warning"] = f"Unknown currency codes: {', '.join(sorted(not_found))}"
+                result["available_currencies"] = available_currencies
+        else:
+            rates = all_rates
+            result = {
+                "date": day.date.isoformat(),
+                "source": "Magyar Nemzeti Bank (MNB)",
+                "base": "HUF",
+                "count": len(rates),
+                "rates": [{"currency": r.currency, "rate": r.rate} for r in rates],
+            }
+
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     except Exception as e:
@@ -1280,6 +1364,12 @@ def mnb_historical_rates(
         end = date_type.fromisoformat(end_date)
     except ValueError:
         return json.dumps({"error": "Invalid date format. Use YYYY-MM-DD."}, indent=2)
+
+    if start > end:
+        return json.dumps({
+            "error": f"start_date ({start_date}) is after end_date ({end_date})",
+            "hint": "Swap the dates: start_date should be earlier than end_date.",
+        }, indent=2)
 
     curr_list = [c.strip().upper() for c in currencies.split(",") if c.strip()]
     if not curr_list:
