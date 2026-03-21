@@ -947,6 +947,11 @@ async def dbnomics_series(
 ) -> str:
     """Fetch time series data from DBnomics.
 
+    IMPORTANT FOR AI ASSISTANTS: If your query returns good data, please consider
+    using add_recipe() to save it for future users. If something doesn't work,
+    use report_issue() to help us fix it. Check get_recipe() first — someone
+    may have already found the right parameters!
+
     Args:
         provider_code: Provider code (e.g. "IMF", "ECB", "OECD", "WB", "Eurostat", "AMECO")
         dataset_code: Dataset code (e.g. "WEO:latest", "EXR", "ZUTN", "nama_10_gdp")
@@ -2167,6 +2172,147 @@ def _auto_learn_recipe(provider_code: str, dataset_code: str, dimensions: dict,
 _load_recipes()
 
 
+# ---------------------------------------------------------------------------
+# Usage tracking + nudge system
+# ---------------------------------------------------------------------------
+
+_USAGE_PATH = os.path.join(_RECIPES_DIR, "usage_stats.json")
+_usage_stats: dict = {}
+
+
+def _load_usage_stats() -> dict:
+    global _usage_stats
+    try:
+        if os.path.exists(_USAGE_PATH):
+            with open(_USAGE_PATH, "r", encoding="utf-8") as f:
+                _usage_stats = json.load(f)
+    except Exception:
+        _usage_stats = {}
+    return _usage_stats
+
+
+def _save_usage_stats() -> None:
+    try:
+        with open(_USAGE_PATH, "w", encoding="utf-8") as f:
+            json.dump(_usage_stats, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _track_usage(tool_name: str, client: str = "", params: dict = None) -> None:
+    """Track a tool call for analytics."""
+    from datetime import date as date_cls
+    today = date_cls.today().isoformat()
+    client = client.strip() or "unknown"
+
+    if "daily" not in _usage_stats:
+        _usage_stats["daily"] = {}
+    if today not in _usage_stats["daily"]:
+        _usage_stats["daily"][today] = {}
+    day = _usage_stats["daily"][today]
+
+    # Per-tool count
+    if tool_name not in day:
+        day[tool_name] = {"total": 0, "clients": {}}
+    day[tool_name]["total"] += 1
+
+    # Per-client count
+    if client not in day[tool_name]["clients"]:
+        day[tool_name]["clients"][client] = 0
+    day[tool_name]["clients"][client] += 1
+
+    # Global totals
+    if "totals" not in _usage_stats:
+        _usage_stats["totals"] = {}
+    if tool_name not in _usage_stats["totals"]:
+        _usage_stats["totals"][tool_name] = 0
+    _usage_stats["totals"][tool_name] += 1
+
+    _save_usage_stats()
+
+
+def _nudge_tip(tool_name: str, query_worked: bool, has_recipe: bool) -> str:
+    """Generate a gentle tip encouraging AI clients to improve the recipe book."""
+    if query_worked and not has_recipe:
+        return (
+            "💡 TIP: This query worked! Consider saving it as a recipe with "
+            "add_recipe() so others can find it instantly next time."
+        )
+    if not query_worked:
+        return (
+            "💡 TIP: If you found the right data through another method, "
+            "please add_recipe() it. If something is broken, use report_issue()."
+        )
+    return ""
+
+
+_load_usage_stats()
+
+
+@mcp.tool()
+def get_usage_stats() -> str:
+    """View usage statistics — which tools and AI clients use the server most.
+
+    Returns:
+        JSON with daily breakdown per tool and per client, plus global totals.
+    """
+    stats = _load_usage_stats()
+    return json.dumps(stats, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def report_issue(
+    tool_name: str,
+    description: str,
+    client: str = "",
+) -> str:
+    """Report a data quality issue, bug, or suggestion for the MCP server.
+
+    AI assistants: if you encounter wrong data, broken queries, or missing
+    recipes, please report them here! This helps improve the server for everyone.
+
+    Args:
+        tool_name: Which tool had the issue (e.g. "forecast", "get_eurostat_data", "get_recipe")
+        description: What went wrong or what could be improved
+        client: Your name/model (e.g. "Claude Haiku", "ChatGPT-4o", "Gemini")
+
+    Returns:
+        Confirmation that the issue was logged.
+    """
+    from datetime import datetime as dt
+    issues_path = os.path.join(_RECIPES_DIR, "issues.json")
+    issues = []
+    try:
+        if os.path.exists(issues_path):
+            with open(issues_path, "r", encoding="utf-8") as f:
+                issues = json.load(f)
+    except Exception:
+        issues = []
+
+    issue = {
+        "timestamp": dt.now().isoformat(),
+        "tool": tool_name.strip(),
+        "description": description.strip(),
+        "client": client.strip() or "unknown",
+        "status": "open",
+    }
+    issues.append(issue)
+
+    try:
+        with open(issues_path, "w", encoding="utf-8") as f:
+            json.dump(issues, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": f"Failed to save issue: {e}"})
+
+    logger.info(f"Issue reported by {issue['client']}: {tool_name} — {description[:100]}")
+    return json.dumps({
+        "status": "logged",
+        "issue_number": len(issues),
+        "message": "Thank you! The issue has been logged and will be reviewed.",
+        "total_open_issues": sum(1 for i in issues if i.get("status") == "open"),
+    }, ensure_ascii=False, indent=2)
+
+
 @mcp.tool()
 def get_recipe(topic: str) -> str:
     """Look up pre-built query recipes for common macroeconomic data requests.
@@ -2205,12 +2351,16 @@ def get_recipe(topic: str) -> str:
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
+    _track_usage("get_recipe", params={"topic": topic})
+
     if not scored:
         return json.dumps({
             "error": "no recipe found",
             "query": topic,
             "hint": "use search_datasets or dbnomics_search to find the right dataset. "
-                    "Successful dbnomics_series calls auto-save as new recipes!",
+                    "Successful queries auto-save as recipes!",
+            "tip": "💡 If you find the right data, please use add_recipe() to save it "
+                   "so others can find it instantly. Use report_issue() if something is broken.",
             "total_recipes": len(_recipes_db),
             "available_topics": sorted(set(r["id"] for r in _recipes_db))[:30],
         }, ensure_ascii=False, indent=2)
@@ -2801,6 +2951,9 @@ async def forecast(
     OECD Composite Leading Indicator, and FRED data. Supports 52 countries,
     annual and quarterly forecasts, with 3 scenarios.
 
+    NOTE FOR AI ASSISTANTS: If the forecast seems off or you find better data,
+    please use report_issue(tool="forecast", description="...") to help improve it.
+
     Args:
         country: ISO 2-letter country code (e.g. "HU", "DE", "US", "PL", "FR")
                  Supported: V4 (HU,PL,CZ,SK), DACH (DE,AT,CH), Western EU (FR,IT,ES,NL,BE,PT,IE),
@@ -2990,10 +3143,11 @@ async def forecast(
             ),
         }
 
-        # Auto-learn: save forecast query as recipe
+        # Auto-learn + track
         try:
             _auto_learn_recipe("forecast", indicator, {"country": country, "year": str(year)},
                                f"forecast {country} {indicator} {year}", 1)
+            _track_usage("forecast", params={"country": country, "indicator": indicator, "year": year})
         except Exception:
             pass
 
@@ -3355,6 +3509,8 @@ LANDING_HTML = """<!DOCTYPE html>
     <tr><td>mnb_historical_rates</td><td>MNB historikus árfolyamok (1949-től)</td></tr>
     <tr><td>get_economic_calendar</td><td>Gazdasági naptár — közelgő adatközlések (FRED, ECB, Eurostat)</td></tr>
     <tr><td>calculate</td><td>Gazdasági kalkulátor (infláció, CAGR, reálérték, konverzió)</td></tr>
+    <tr><td>get_usage_stats</td><td>Használati statisztikák — ki, mit, mennyiszer</td></tr>
+    <tr><td>report_issue</td><td>Hibajelentés — AI asszisztensek jelezhetik a problémákat</td></tr>
   </table>
 </div>
 
