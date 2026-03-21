@@ -2657,6 +2657,7 @@ async def get_oecd_cli(
 # Lazy-loaded singleton
 _forecaster_instance = None
 _forecaster_error = None
+_sajat_cache_ready = False
 
 
 def _get_forecaster():
@@ -2681,8 +2682,89 @@ def _get_forecaster():
         return None
 
 
+async def _ensure_sajat_cache(countries: list[str] | None = None):
+    """Populate SAJÁT forecaster cache using async data fetch (runs in MCP event loop)."""
+    global _sajat_cache_ready
+    if _sajat_cache_ready:
+        return True
+    try:
+        import sys
+        _server_dir = os.path.dirname(os.path.abspath(__file__))
+        if _server_dir not in sys.path:
+            sys.path.insert(0, _server_dir)
+        from forecaster.comprehensive_forecaster import (
+            ComprehensiveConfig, ComprehensiveDataFetcher, ComprehensiveForecaster
+        )
+        from forecaster.sajat_forecaster_cache import _save_cache
+
+        config = ComprehensiveConfig()
+        if countries:
+            config.COUNTRIES = countries
+        else:
+            # Start with core countries to keep it fast
+            config.COUNTRIES = [
+                'HU', 'PL', 'CZ', 'SK', 'DE', 'AT', 'FR', 'IT', 'ES',
+                'NL', 'BE', 'GB', 'SE', 'RO', 'BG', 'HR', 'SI', 'EE', 'LV', 'LT',
+            ]
+
+        logger.info(f"SAJÁT cache: fetching data for {len(config.COUNTRIES)} countries...")
+        fetcher = ComprehensiveDataFetcher(config)
+        all_data = await fetcher.fetch_all_data()
+
+        logger.info("SAJÁT cache: generating forecasts...")
+        forecaster = ComprehensiveForecaster(config, all_data)
+        all_forecasts = forecaster.forecast_all_comprehensive(scenarios=['REALISTIC'])
+
+        # Convert to cache format
+        from datetime import datetime as dt
+        cache = {'generated_at': dt.now().isoformat(), 'scenario': 'REALISTIC', 'countries': {}}
+        for country, country_data in all_forecasts.items():
+            if 'REALISTIC' not in country_data:
+                continue
+            scenario_data = country_data['REALISTIC']
+            cc = {'gdp': {}, 'inflation': {}, 'unemployment': {}}
+
+            if 'gdp' in scenario_data and not scenario_data['gdp'].empty:
+                for idx, row in scenario_data['gdp'].iterrows():
+                    cc['gdp'][str(idx)] = {
+                        'value': float(row.get('GDP', 0)),
+                        'growth_qoq': float(row.get('growth_qoq', 0)),
+                        'growth_yoy': float(row.get('growth_yoy', 0)),
+                    }
+            if 'inflation' in scenario_data and not scenario_data['inflation'].empty:
+                for idx, row in scenario_data['inflation'].iterrows():
+                    cc['inflation'][str(idx)] = {
+                        'value': float(row.get('inflation', 0)),
+                        'change': float(row.get('change', 0)) if 'change' in row else 0,
+                    }
+            if 'unemployment' in scenario_data and not scenario_data['unemployment'].empty:
+                for idx, row in scenario_data['unemployment'].iterrows():
+                    if 'year' in row and 'quarter' in row:
+                        yr = int(row['year'])
+                        qv = row['quarter']
+                        qi = int(qv[1]) if isinstance(qv, str) and qv.startswith('Q') else int(qv)
+                        qd = {1: f"{yr}-03-31", 2: f"{yr}-06-30", 3: f"{yr}-09-30", 4: f"{yr}-12-31"}
+                        period = qd.get(qi, f"{yr}-03-31")
+                    else:
+                        period = str(idx)
+                    cc['unemployment'][period] = {
+                        'value': float(row.get('unemployment', 0)),
+                        'change': float(row.get('unemployment_change', 0)) if 'unemployment_change' in row else 0,
+                    }
+            cache['countries'][country] = cc
+
+        _save_cache(cache)
+        _sajat_cache_ready = True
+        logger.info(f"SAJÁT cache ready: {len(cache['countries'])} countries")
+        return True
+
+    except Exception as e:
+        logger.error(f"SAJÁT cache build failed: {e}")
+        return False
+
+
 @mcp.tool()
-def forecast(
+async def forecast(
     country: str,
     indicator: str = "gdp",
     year: int = 2026,
@@ -2732,7 +2814,10 @@ def forecast(
     q = quarter if quarter and 1 <= quarter <= 4 else None
 
     try:
-        # Fetch leading indicators first (needed for composite score)
+        # Ensure SAJÁT cache is populated (async — runs Eurostat/FRED data fetch)
+        await _ensure_sajat_cache()
+
+        # Fetch leading indicators (needed for composite score)
         uf.fetch_all_indicators()
 
         result = uf.get_ultimate_forecast(country, indicator, year, quarter=q)
