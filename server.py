@@ -1282,63 +1282,104 @@ def _parse_ksh_csv(text: str, max_rows: int = 500) -> dict:
     if len(lines) < 2:
         return {"error": "Too few lines in CSV"}
 
-    # Detect title lines vs header vs data.
-    # Title line: "1.1.1.1. Title here;;;;;;;;" (1-2 non-empty, rest empty)
-    # Header line: "Év;Mutató1;Mutató2;..." (many non-empty)
-    # Multi-row headers: some tables have 2-3 header rows before data starts
+    # Detect title, header, and data start.
+    # KSH CSVs come in two formats:
+    #   Format A (standard): Év;Mutató1;Mutató2  →  2010;104,9;103,5
+    #   Format B (matrix/territorial): Területi egység;2009;2010;...  →  Budapest;104 253;...
     title = ""
     header_idx = 0
 
-    # Find where data starts: first line where col 0 looks like a year or numeric
+    def _count_years_in_parts(parts):
+        """Count how many parts look like 4-digit years."""
+        return sum(1 for p in parts if re.match(r'^\d{4}$', p.strip().strip('"')))
+
     def _looks_like_data(line_parts):
         first = line_parts[0].strip().strip('"')
         if re.match(r'^\d{4}$', first):
             return True
-        # Also check if it's a section label (like "Együtt", "Férfi") — still data
-        if len(line_parts) > 2:
-            numeric_count = sum(1 for p in line_parts[1:4] if p.strip().strip('"').replace(",", "").replace(" ", "").replace("-", "").replace(".", "").isdigit())
-            if numeric_count >= 1:
+        # Check if cols 2+ have numeric data (territorial format)
+        if len(line_parts) > 3:
+            numeric_count = sum(1 for p in line_parts[2:6]
+                                if p.strip().strip('"').replace(",", "").replace("\xa0", "").replace(" ", "").replace("-", "").replace(".", "").isdigit()
+                                and p.strip())
+            if numeric_count >= 2:
                 return True
         return False
 
-    # Scan forward to find header and data start
-    data_start = len(lines)
-    for i in range(min(len(lines), 10)):
-        parts_i = [p.strip() for p in lines[i].split(";")]
-        if _looks_like_data(parts_i):
-            data_start = i
+    # Check for territorial/matrix format: header row contains year columns
+    # e.g. "Területi egység neve;Területi egység szintje;2009;2010;2011;..."
+    is_matrix_format = False
+    for i in range(min(len(lines), 5)):
+        parts_i = [p.strip().strip('"') for p in lines[i].split(";")]
+        if _count_years_in_parts(parts_i) >= 3:
+            # This line has many year columns → it's the header
+            is_matrix_format = True
+            # Title is everything before this line that has few non-empty fields
+            for t in range(i):
+                parts_t = [p.strip() for p in lines[t].split(";")]
+                nonempty_t = sum(1 for p in parts_t if p)
+                if nonempty_t <= 2:
+                    title = parts_t[0].strip('"')
+            header_idx = i
             break
 
-    # Title: first line if it has few non-empty fields
-    parts0 = [p.strip() for p in lines[0].split(";")]
-    nonempty0 = sum(1 for p in parts0 if p)
-    if nonempty0 <= 2 and data_start > 1:
-        title = parts0[0].strip('"')
-        header_idx = 1
-    else:
-        header_idx = 0
+    if not is_matrix_format:
+        # Standard format: find data start
+        data_start = len(lines)
+        for i in range(min(len(lines), 10)):
+            parts_i = [p.strip() for p in lines[i].split(";")]
+            if _looks_like_data(parts_i):
+                data_start = i
+                break
 
-    # Merge multi-row headers (from header_idx to data_start-1)
-    header_parts = [p.strip().strip('"') for p in lines[header_idx].split(";")]
-    for extra_row in range(header_idx + 1, data_start):
-        extra_parts = [p.strip().strip('"') for p in lines[extra_row].split(";")]
-        for j in range(min(len(header_parts), len(extra_parts))):
-            if extra_parts[j]:
-                if header_parts[j]:
-                    header_parts[j] += " " + extra_parts[j]
-                else:
-                    header_parts[j] = extra_parts[j]
+        parts0 = [p.strip() for p in lines[0].split(";")]
+        nonempty0 = sum(1 for p in parts0 if p)
+        if nonempty0 <= 2 and data_start > 1:
+            title = parts0[0].strip('"')
+            header_idx = 1
+        else:
+            header_idx = 0
+
+        # Merge multi-row headers
+        header_parts = [p.strip().strip('"') for p in lines[header_idx].split(";")]
+        for extra_row in range(header_idx + 1, data_start):
+            extra_parts = [p.strip().strip('"') for p in lines[extra_row].split(";")]
+            for j in range(min(len(header_parts), len(extra_parts))):
+                if extra_parts[j]:
+                    if header_parts[j]:
+                        header_parts[j] += " " + extra_parts[j]
+                    else:
+                        header_parts[j] = extra_parts[j]
+    else:
+        # Matrix format: header is the year row, data starts right after
+        header_parts = [p.strip().strip('"') for p in lines[header_idx].split(";")]
+        data_start = header_idx + 1
 
     headers = header_parts
     while headers and not headers[-1]:
         headers.pop()
 
+    # For matrix format, track current category (section headers like "testi sértés")
+    current_category = ""
     rows = []
     for line in lines[data_start:]:
         if not line.strip():
             continue
         values = line.split(";")
+
+        # Matrix format: detect category/section headers (few non-empty fields)
+        if is_matrix_format:
+            nonempty = sum(1 for v in values[1:] if v.strip() and v.strip().strip('"'))
+            if nonempty == 0:
+                # Section header like "testi sértés" or "Ebből:"
+                label = values[0].strip().strip('"')
+                if label and label != "Ebből:":
+                    current_category = label
+                continue
+
         row = {}
+        if is_matrix_format and current_category:
+            row["kategória"] = current_category
         for i, h in enumerate(headers):
             if i < len(values):
                 val = values[i].strip().strip('"')
