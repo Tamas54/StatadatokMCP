@@ -1653,6 +1653,113 @@ async def yfinance_history(
 
 
 # ---------------------------------------------------------------------------
+# Calculator — economic math without burning AI tokens
+# ---------------------------------------------------------------------------
+import math
+
+
+@mcp.tool()
+def calculate(expression: str) -> str:
+    """Evaluate mathematical expressions and economic calculations.
+
+    Use this instead of calculating in your head — it's faster and avoids errors.
+
+    Args:
+        expression: Math expression or economic function call. Supports:
+            Basic math: "2 + 3", "100 * 1.05 ** 16", "(509571 / 119698 - 1) * 100"
+            Cumulative inflation: "cum_inflation([104.9, 103.9, 105.7, 101.7])"
+                → multiplies annual CPI indices (prev year=100%) into total inflation
+            Real value: "real_value(509571, [104.9, 103.9, ...])"
+                → deflates a nominal value by cumulative CPI indices
+            CAGR: "cagr(119698, 509571, 16)"
+                → compound annual growth rate over N years
+            Currency convert: "convert(509571, 393)"
+                → simple division (value / exchange_rate)
+            Round: "round(3.14159, 2)" → 3.14
+
+    Examples:
+        "509571 / 119698"  → 4.257 (wage ratio)
+        "cum_inflation([104.9, 103.9, 105.7, 101.7, 99.8, 99.9, 100.4, 102.4, 102.8, 103.4, 103.3, 105.1, 114.5, 117.6, 103.7, 104.4])"  → cumulative HU CPI 2010-2025
+        "cagr(119698, 509571, 16)"  → annualized growth rate
+        "real_value(509571, [104.9, 103.9, 105.7])"  → deflated value
+
+    Returns:
+        JSON with the result and the expression used.
+    """
+    # Define safe economic helper functions
+    def cum_inflation(indices):
+        """Cumulative inflation from annual CPI indices (prev year = 100%)."""
+        result = 1.0
+        for idx in indices:
+            result *= idx / 100.0
+        return {"cumulative_multiplier": round(result, 4),
+                "total_percent_change": round((result - 1) * 100, 2),
+                "years": len(indices)}
+
+    def real_value(nominal, indices):
+        """Deflate a nominal value by cumulative CPI indices."""
+        cum = 1.0
+        for idx in indices:
+            cum *= idx / 100.0
+        deflated = nominal / cum
+        return {"nominal": nominal,
+                "real_value": round(deflated, 2),
+                "inflation_multiplier": round(cum, 4),
+                "purchasing_power_change_pct": round((1 / cum - 1) * 100, 2)}
+
+    def cagr(start_val, end_val, years):
+        """Compound annual growth rate."""
+        rate = (end_val / start_val) ** (1 / years) - 1
+        return {"cagr_percent": round(rate * 100, 2),
+                "total_growth_percent": round((end_val / start_val - 1) * 100, 2),
+                "multiplier": round(end_val / start_val, 4),
+                "years": years}
+
+    def convert(amount, rate):
+        """Currency conversion (amount / rate)."""
+        return {"result": round(amount / rate, 2),
+                "amount": amount,
+                "rate": rate}
+
+    def pct_change(old, new):
+        """Percentage change from old to new."""
+        return round((new / old - 1) * 100, 2)
+
+    # Safe evaluation context
+    safe_ns = {
+        "__builtins__": {},
+        "cum_inflation": cum_inflation,
+        "real_value": real_value,
+        "cagr": cagr,
+        "convert": convert,
+        "pct_change": pct_change,
+        "round": round,
+        "abs": abs,
+        "min": min,
+        "max": max,
+        "sum": sum,
+        "len": len,
+        "pow": pow,
+        "sqrt": math.sqrt,
+        "log": math.log,
+        "log10": math.log10,
+    }
+
+    try:
+        result = eval(expression, safe_ns)
+        return json.dumps({
+            "expression": expression,
+            "result": result,
+        }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "error": str(e),
+            "expression": expression,
+            "hint": "Examples: '2+3', 'cum_inflation([104.9, 103.9])', 'cagr(100, 200, 10)'",
+        }, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # MNB — Magyar Nemzeti Bank official exchange rates
 # ---------------------------------------------------------------------------
 _mnb_client = None
@@ -1981,6 +2088,7 @@ LANDING_HTML = """<!DOCTYPE html>
     <tr><td>yfinance_history</td><td>Historikus árfolyamadatok (napi/heti/havi OHLCV)</td></tr>
     <tr><td>mnb_current_rates</td><td>Hivatalos MNB árfolyamok (HUF, 32 deviza)</td></tr>
     <tr><td>mnb_historical_rates</td><td>MNB historikus árfolyamok (1949-től)</td></tr>
+    <tr><td>calculate</td><td>Gazdasági kalkulátor (infláció, CAGR, reálérték, konverzió)</td></tr>
   </table>
 </div>
 
