@@ -2686,7 +2686,16 @@ async def _ensure_sajat_cache(countries: list[str] | None = None):
     """Populate SAJÁT forecaster cache using async data fetch (runs in MCP event loop)."""
     global _sajat_cache_ready
     if _sajat_cache_ready:
-        return True
+        # Double-check cache actually has data
+        try:
+            from forecaster.sajat_forecaster_cache import _load_cache
+            cache = _load_cache()
+            if cache and cache.get('countries'):
+                return True
+            # Cache flag was set but cache is empty — retry
+            _sajat_cache_ready = False
+        except Exception:
+            _sajat_cache_ready = False
     try:
         import sys
         _server_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2759,7 +2768,8 @@ async def _ensure_sajat_cache(countries: list[str] | None = None):
         return True
 
     except Exception as e:
-        logger.error(f"SAJÁT cache build failed: {e}")
+        import traceback
+        logger.error(f"SAJÁT cache build failed: {e}\n{traceback.format_exc()}")
         return False
 
 
@@ -2815,12 +2825,13 @@ async def forecast(
 
     try:
         # Ensure SAJÁT cache is populated (async — runs Eurostat/FRED data fetch)
-        await _ensure_sajat_cache()
+        cache_ok = await _ensure_sajat_cache()
 
         # Fetch leading indicators (needed for composite score)
         uf.fetch_all_indicators()
 
         result = uf.get_ultimate_forecast(country, indicator, year, quarter=q)
+        result["_cache_status"] = "ready" if cache_ok else "failed"
 
         # Clean up for JSON serialization (numpy types → Python native)
         def _clean(obj):
