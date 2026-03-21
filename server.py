@@ -2658,6 +2658,7 @@ async def get_oecd_cli(
 _forecaster_instance = None
 _forecaster_error = None
 _sajat_cache_ready = False
+_sajat_cache_error_detail = ""
 
 
 def _get_forecaster():
@@ -2769,7 +2770,9 @@ async def _ensure_sajat_cache(countries: list[str] | None = None):
 
     except Exception as e:
         import traceback
-        logger.error(f"SAJÁT cache build failed: {e}\n{traceback.format_exc()}")
+        global _sajat_cache_error_detail
+        _sajat_cache_error_detail = f"{e}\n{traceback.format_exc()}"
+        logger.error(f"SAJÁT cache build failed: {_sajat_cache_error_detail}")
         return False
 
 

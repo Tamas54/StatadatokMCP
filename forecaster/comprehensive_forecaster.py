@@ -18,8 +18,13 @@ import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import warnings
-import matplotlib.pyplot as plt
-import seaborn as sns
+# matplotlib/seaborn not needed for MCP server (plotting only)
+try:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+except ImportError:
+    plt = None
+    sns = None
 from typing import Dict, List, Tuple, Optional
 import sys
 import os
