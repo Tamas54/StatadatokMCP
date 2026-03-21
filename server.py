@@ -1037,12 +1037,10 @@ KSH_STADAT_CATALOG = {
     "nep0007": "Születéskor várható átlagos élettartam",
     "nep0011": "Belföldi és nemzetközi vándorlás",
     "nep0015": "Népesség vármegyénként (január 1.)",
-    # --- Government finance (pze — NOT gov!, verified 2026-03-21) ---
-    "pze0001": "A kormányzati szektor egyenlege (EDP-jelentés alapján)",
-    "pze0002": "A kormányzati szektor bevételei és kiadásai (ESA 2010)",
-    "pze0003": "A kormányzati szektor adóssága a GDP százalékában",
-    "pze0004": "Az államháztartás funkcionális kiadásai (COFOG)",
-    "pze0005": "Az adó- és társadalombiztosítási bevételek részletezése",
+    # --- Government finance: NO CSV available in STADAT! ---
+    # Use Eurostat gov_10dd_ggd or dbnomics for government debt/deficit data.
+    # --- Environment (kor) ---
+    "kor0001": "Környezet, kommunális ellátás főbb adatai",
     # --- Tourism (tur — verified 2026-03-21) ---
     "tur0001": "A turizmus és vendéglátás fontosabb adatai",
     "tur0030": "Az utazásszervező és -közvetítő vállalkozások száma és teljesítménye",
@@ -1189,7 +1187,7 @@ async def get_ksh_stadat(
         bel0001 — Retail trade (was ksk!)
         kkr0001 — Foreign trade (was kul!)
         nep0001 — Population and vital statistics
-        pze0003 — Government debt % GDP (was pen!)
+        kor0001 — Environment & utilities
         ene0001 — Energy balance
         tur0001 — Tourism
 
