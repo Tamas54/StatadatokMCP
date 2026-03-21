@@ -2984,22 +2984,23 @@ LANDING_HTML = """<!DOCTYPE html>
   </p>
   <table>
     <tr><th>Eszköz</th><th>Leírás</th></tr>
-    <tr><td>search_datasets</td><td>Keresés Eurostat, KSH és DBnomics adatkészletek közt</td></tr>
+    <tr><td>search_datasets</td><td>Keresés Eurostat, KSH és DBnomics közt — szinonimákkal (ország + téma)</td></tr>
+    <tr><td>get_recipe</td><td>Öntanuló receptkönyv — kész lekérési sablonok, automatikusan bővül</td></tr>
+    <tr><td>add_recipe</td><td>Recept hozzáadása a receptkönyvhöz (bárki hívhatja)</td></tr>
     <tr><td>get_eurostat_data</td><td>Eurostat adatlekérés (GDP, infláció, munkanélküliség…)</td></tr>
     <tr><td>get_ksh_stadat</td><td>KSH STADAT táblák — magyar idősorok (árak, bérek, GDP…)</td></tr>
     <tr><td>get_ksh_data</td><td>KSH High-Value Datasets letöltése</td></tr>
+    <tr><td>get_fred_data</td><td>FRED — 800K+ US gazdasági idősor (kamatok, infláció, GDP, munkaerő…)</td></tr>
     <tr><td>dbnomics_search</td><td>Keresés 700M+ adatsor közt (IMF, ECB, OECD…)</td></tr>
-    <tr><td>dbnomics_series</td><td>Idősor lekérése DBnomics-ból</td></tr>
+    <tr><td>dbnomics_series</td><td>Idősor lekérése DBnomics-ból — sikeres lekérések receptté válnak</td></tr>
     <tr><td>dbnomics_providers</td><td>DBnomics adatszolgáltatók listája</td></tr>
+    <tr><td>get_oecd_cli</td><td>OECD Composite Leading Indicator — konjunktúra-előrejelzés 30+ országra</td></tr>
     <tr><td>yfinance_quote</td><td>Aktuális árfolyam (részvény, deviza, áru, index, BUX)</td></tr>
     <tr><td>yfinance_history</td><td>Historikus árfolyamadatok (napi/heti/havi OHLCV)</td></tr>
     <tr><td>mnb_current_rates</td><td>Hivatalos MNB árfolyamok (HUF, 32 deviza)</td></tr>
     <tr><td>mnb_historical_rates</td><td>MNB historikus árfolyamok (1949-től)</td></tr>
-    <tr><td>calculate</td><td>Gazdasági kalkulátor (infláció, CAGR, reálérték, konverzió)</td></tr>
-    <tr><td>get_recipe</td><td>Recept-keresés: kész lekérési sablonok gyakori makroadatokhoz</td></tr>
-    <tr><td>get_fred_data</td><td>FRED — 800K+ US gazdasági idősor (kamatok, infláció, GDP, munkaerő…)</td></tr>
-    <tr><td>get_oecd_cli</td><td>OECD Composite Leading Indicator — konjunktúra-előrejelzés 30+ országra</td></tr>
     <tr><td>get_economic_calendar</td><td>Gazdasági naptár — közelgő adatközlések (FRED, ECB, Eurostat)</td></tr>
+    <tr><td>calculate</td><td>Gazdasági kalkulátor (infláció, CAGR, reálérték, konverzió)</td></tr>
   </table>
 </div>
 
