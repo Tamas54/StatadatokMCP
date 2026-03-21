@@ -59,6 +59,107 @@ async def get_client() -> httpx.AsyncClient:
 # ---------------------------------------------------------------------------
 # Eurostat helpers
 # ---------------------------------------------------------------------------
+
+# Country name → Eurostat geo code mapping (for smarter search)
+_COUNTRY_TO_GEO: dict[str, str] = {
+    "austria": "AT", "belgium": "BE", "bulgaria": "BG", "croatia": "HR",
+    "cyprus": "CY", "czech republic": "CZ", "czechia": "CZ",
+    "denmark": "DK", "estonia": "EE", "finland": "FI", "france": "FR",
+    "germany": "DE", "greece": "EL", "hungary": "HU", "ireland": "IE",
+    "italy": "IT", "latvia": "LV", "lithuania": "LT", "luxembourg": "LU",
+    "malta": "MT", "netherlands": "NL", "poland": "PL", "portugal": "PT",
+    "romania": "RO", "slovakia": "SK", "slovenia": "SI", "spain": "ES",
+    "sweden": "SE", "norway": "NO", "switzerland": "CH", "iceland": "IS",
+    "turkey": "TR", "türkiye": "TR", "united kingdom": "UK", "uk": "UK",
+    "eu": "EU27_2020", "euro area": "EA20", "eurozone": "EA20",
+    # Hungarian names
+    "magyarország": "HU", "ausztria": "AT", "németország": "DE",
+    "franciaország": "FR", "olaszország": "IT", "spanyolország": "ES",
+    "lengyelország": "PL", "románia": "RO", "csehország": "CZ",
+    "szlovénia": "SI", "horvátország": "HR", "szlovákia": "SK",
+    "bulgária": "BG", "szerbia": "RS", "svájc": "CH",
+    "svédország": "SE", "norvégia": "NO", "dánia": "DK",
+    "finnország": "FI", "észtország": "EE", "lettország": "LV",
+    "litvánia": "LT", "hollandia": "NL", "belgium": "BE",
+    "portugália": "PT", "görögország": "EL", "írország": "IE",
+    "törökország": "TR",
+}
+
+# Topic synonyms: user term → additional search keywords
+_TOPIC_SYNONYMS: dict[str, list[str]] = {
+    "wages": ["earnings", "compensation", "remuneration", "salary", "labour cost"],
+    "salary": ["earnings", "wages", "compensation", "remuneration"],
+    "earnings": ["wages", "compensation", "salary"],
+    "pay": ["wages", "earnings", "compensation", "salary"],
+    "fizetés": ["earnings", "wages", "kereset", "bér", "compensation"],
+    "bér": ["earnings", "wages", "kereset", "fizetés", "compensation"],
+    "kereset": ["earnings", "wages", "bér", "fizetés"],
+    "átlagfizetés": ["earnings", "wages", "mean annual", "average"],
+    "átlagkereset": ["earnings", "wages", "mean annual", "average"],
+    "inflation": ["hicp", "consumer price", "price index", "cpi"],
+    "infláció": ["hicp", "consumer price", "price index", "cpi", "inflation"],
+    "gdp": ["gross domestic product", "national accounts", "nama"],
+    "unemployment": ["jobless", "labour force", "munkanélküli"],
+    "munkanélküliség": ["unemployment", "labour force", "jobless"],
+    "trade": ["export", "import", "balance of payments"],
+    "kereskedelem": ["trade", "export", "import"],
+    "population": ["demography", "inhabitants", "népesség"],
+    "népesség": ["population", "demography", "inhabitants"],
+    "housing": ["house price", "dwelling", "rent", "lakás"],
+    "lakás": ["housing", "house price", "dwelling", "rent"],
+    "energy": ["electricity", "gas", "renewable", "energia"],
+    "energia": ["energy", "electricity", "gas", "renewable"],
+    "poverty": ["deprivation", "social exclusion", "szegénység", "income distribution"],
+    "education": ["school", "student", "graduate", "isced", "oktatás"],
+}
+
+# Well-known Eurostat datasets for common queries (dataset_code: description)
+_EUROSTAT_POPULAR: dict[str, dict[str, str]] = {
+    "wages": {
+        "earn_ses_annual": "Structure of earnings survey - annual data",
+        "earn_nt_net": "Net earnings - annual",
+        "earn_mw_cur": "Minimum wages",
+        "lc_lci_r2_a": "Labour cost index - annual",
+        "earn_ses_pub2s": "Mean annual earnings by sex, economic activity",
+    },
+    "inflation": {
+        "prc_hicp_manr": "HICP - monthly annual rate of change",
+        "prc_hicp_aind": "HICP - annual average index",
+        "prc_hicp_midx": "HICP - monthly index",
+    },
+    "gdp": {
+        "nama_10_gdp": "GDP and main components",
+        "nama_10_pc": "GDP per capita",
+        "namq_10_gdp": "GDP quarterly",
+    },
+    "unemployment": {
+        "une_rt_m": "Unemployment rate - monthly",
+        "une_rt_a": "Unemployment rate - annual",
+        "lfsi_emp_a": "Employment rates - annual",
+    },
+    "population": {
+        "demo_pjan": "Population on 1 January",
+        "demo_gind": "Population change",
+        "demo_mlexpec": "Life expectancy",
+    },
+    "trade": {
+        "ext_lt_maineu": "EU trade - main partners",
+        "bop_c6_a": "Balance of payments - annual",
+    },
+    "housing": {
+        "prc_hpi_a": "House price index - annual",
+        "ilc_lvho02": "Housing cost overburden rate",
+    },
+    "energy": {
+        "nrg_bal_c": "Complete energy balances",
+        "nrg_pc_204": "Electricity prices - households",
+    },
+    "poverty": {
+        "ilc_li02": "At-risk-of-poverty rate",
+        "ilc_peps01n": "People at risk of poverty or social exclusion",
+    },
+}
+
 EUROSTAT_BASE = "https://ec.europa.eu/eurostat/api/dissemination"
 EUROSTAT_STAT = f"{EUROSTAT_BASE}/statistics/1.0/data"
 EUROSTAT_TOC_URL = (
@@ -131,22 +232,67 @@ async def _load_eurostat_toc() -> list[dict]:
     return _eurostat_toc_cache
 
 
-def _search_toc(entries: list[dict], query: str, limit: int = 20) -> list[dict]:
-    """Case-insensitive keyword search with relevance scoring.
+def _expand_search_keywords(query: str) -> list[str]:
+    """Expand user query with synonyms and country code mappings.
 
-    Uses OR logic with scoring: entries matching more keywords rank higher.
-    Entries matching ALL keywords come first, then partial matches.
+    Handles:
+      - Country names → geo codes (e.g. "slovenia" adds "SI")
+      - Topic synonyms (e.g. "wages" adds "earnings", "compensation")
+      - Year stripping (years like "2009" are not useful for title search)
     """
     query_lower = query.lower()
-    keywords = query_lower.split()
-    if not keywords:
+    words = query_lower.split()
+    expanded = set()
+
+    for word in words:
+        # Skip pure years — they don't appear in Eurostat TOC titles
+        if re.match(r"^\d{4}$", word):
+            continue
+        expanded.add(word)
+
+        # Country name → add geo code as extra keyword
+        if word in _COUNTRY_TO_GEO:
+            expanded.add(_COUNTRY_TO_GEO[word].lower())
+
+        # Check multi-word country names (e.g. "czech republic", "united kingdom")
+        for cname, code in _COUNTRY_TO_GEO.items():
+            if " " in cname and cname in query_lower:
+                expanded.add(code.lower())
+
+        # Topic synonyms
+        if word in _TOPIC_SYNONYMS:
+            for syn in _TOPIC_SYNONYMS[word]:
+                expanded.add(syn.lower())
+
+    return list(expanded)
+
+
+def _search_toc(entries: list[dict], query: str, limit: int = 20) -> list[dict]:
+    """Case-insensitive keyword search with relevance scoring and synonym expansion.
+
+    Expands the query with:
+      - Country name → geo code mapping (e.g. "Slovenia" → also searches "SI")
+      - Topic synonyms (e.g. "wages" → also searches "earnings", "compensation")
+      - Year filtering (pure year numbers are stripped as they don't appear in titles)
+
+    Uses OR logic with scoring: entries matching more keywords rank higher.
+    """
+    expanded_keywords = _expand_search_keywords(query)
+    if not expanded_keywords:
         return []
+
+    # Also get original keywords for bonus scoring
+    original_words = [w.lower() for w in query.split() if not re.match(r"^\d{4}$", w)]
 
     scored = []
     for entry in entries:
         text = f"{entry.get('code', '')} {entry.get('title', '')}".lower()
-        score = sum(1 for kw in keywords if kw in text)
-        if score > 0:
+        # Score: count how many expanded keywords match
+        match_count = sum(1 for kw in expanded_keywords if kw in text)
+        if match_count > 0:
+            # Bonus for original (non-synonym) keyword matches
+            original_match = sum(1 for kw in original_words if kw in text)
+            score = match_count + original_match * 2  # original matches weigh more
             scored.append((score, entry))
 
     # Sort by score descending (most keywords matched first)
@@ -362,8 +508,25 @@ async def search_datasets(
 ) -> str:
     """Search for statistical datasets by keyword across Eurostat, KSH, and DBnomics.
 
+    The search automatically expands queries with:
+      - Country name → Eurostat geo code (e.g. "Slovenia" also matches "SI")
+      - Topic synonyms (e.g. "wages" also matches "earnings", "compensation")
+      - Hungarian country/topic names are supported
+
+    Well-known Eurostat datasets for common topics:
+      - Wages/earnings: earn_ses_annual, earn_nt_net, earn_mw_cur, lc_lci_r2_a
+      - Inflation: prc_hicp_manr, prc_hicp_aind, prc_hicp_midx
+      - GDP: nama_10_gdp, nama_10_pc, namq_10_gdp
+      - Unemployment: une_rt_m, une_rt_a, lfsi_emp_a
+      - Population: demo_pjan, demo_gind, demo_mlexpec
+      - Trade: ext_lt_maineu, bop_c6_a
+      - Housing: prc_hpi_a | Energy: nrg_bal_c | Poverty: ilc_li02
+
+    TIP: For Eurostat data, first search to find the dataset code, then use
+    get_eurostat_data with geo filter (e.g. geo="SI" for Slovenia) and time filters.
+
     Args:
-        query: Search keywords (e.g. "GDP Hungary", "inflation", "unemployment")
+        query: Search keywords (e.g. "GDP Hungary", "inflation", "wages Slovenia")
         source: Data source - "eurostat", "ksh", "dbnomics", "all", or "both" (eurostat+ksh). Default: "all"
         limit: Maximum results per source (default: 20)
 
@@ -406,6 +569,20 @@ async def search_datasets(
             {"code": m["code"], "title": m["title"], "source": "eurostat"}
             for m in matches
         ]
+        # Inject well-known datasets for common topics if they're not already in results
+        query_lower = query.lower()
+        matched_codes = {m["code"] for m in matches}
+        suggested = []
+        for topic, datasets in _EUROSTAT_POPULAR.items():
+            # Check if query relates to this topic (direct or via synonyms)
+            topic_words = {topic} | set(_TOPIC_SYNONYMS.get(topic, []))
+            if any(tw in query_lower for tw in topic_words):
+                for code, desc in datasets.items():
+                    if code not in matched_codes:
+                        suggested.append({"code": code, "title": desc, "source": "eurostat", "suggested": True})
+                        matched_codes.add(code)
+        if suggested:
+            results["eurostat_suggested"] = suggested[:10]
 
     if "ksh" in sources:
         # Search STADAT via SQLite index (auto-scanned) + static fallback
@@ -484,9 +661,9 @@ async def get_eurostat_data(
     """Fetch data from Eurostat's JSON-stat API.
 
     Args:
-        dataset_code: Eurostat dataset code (e.g. "nama_10_gdp", "prc_hicp_manr")
-        geo: Country/region filter - comma-separated codes (e.g. "HU,DE,EU27_2020")
-        time: Time period filter for specific years (e.g. "2023", "2020,2021,2022")
+        dataset_code: Eurostat dataset code (e.g. "nama_10_gdp", "prc_hicp_manr", "earn_ses_annual")
+        geo: Country/region filter - comma-separated ISO codes: AT, BE, BG, HR, CY, CZ, DK, EE, FI, FR, DE, EL (Greece), HU, IE, IT, LV, LT, LU, MT, NL, PL, PT, RO, SK, SI (Slovenia), ES, SE, NO, CH, UK, EU27_2020, EA20. Example: "SI" for Slovenia, "HU,DE" for Hungary+Germany.
+        time: Time period filter for specific years (e.g. "2009", "2020,2021,2022")
         sinceTimePeriod: Start of time range (e.g. "2002-01", "2002"). Use with untilTimePeriod for ranges.
         untilTimePeriod: End of time range (e.g. "2008-12", "2008"). Use with sinceTimePeriod for ranges.
         filters: Additional dimension filters as "KEY=VAL&KEY2=VAL2" (e.g. "unit=CP_MEUR&na_item=B1GQ")
