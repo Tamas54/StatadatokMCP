@@ -2124,7 +2124,10 @@ def _auto_learn_recipe(provider_code: str, dataset_code: str, dimensions: dict,
 
     existing = _find_recipe_by_signature(provider_code, dataset_code, dimensions)
     if existing:
-        return  # Already known
+        # Bump usage count on existing recipe
+        existing["call_count"] = existing.get("call_count", 0) + 1
+        _save_recipes()
+        return
 
     # Generate an ID from dimensions
     dim_parts = [f"{v}" for v in dimensions.values()] if dimensions else []
