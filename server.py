@@ -939,8 +939,8 @@ async def dbnomics_series(
 # ---------------------------------------------------------------------------
 KSH_STADAT_BASE = "https://www.ksh.hu/stadat_files"
 
-# Curated catalog of STADAT tables — updated 2026-03-21 via KSH deep research
-# NOTE: KSH reorganized prefixes: kul→kkr, ksk→bel, pen→gov, wages ber→mun
+# Curated catalog of STADAT tables — updated 2026-03-21 via KSH deep research (2 rounds)
+# Prefix changes: kul→kkr, ksk→bel, pen→pze(!!), wages ber→mun
 KSH_STADAT_CATALOG = {
     # --- GDP, national accounts (gdp) ---
     "gdp0001": "A bruttó hazai termék (GDP) értéke és volumenváltozása",
@@ -969,27 +969,28 @@ KSH_STADAT_CATALOG = {
     "ara0039": "Fogyasztóiár-indexek részletes kiadási csoportonként (havi)",
     "ara0041": "Ipari termelőiár-indexek rendeltetés szerint (havi)",
     "ara0044": "Mezőgazdasági termelőiár-indexek alakulása (havi)",
-    # --- Wages & earnings (mun prefix — KSH merged wages into mun!) ---
-    "mun0002": "Az átlagkeresetek alakulása (éves)",
-    "mun0003": "A nettó átlagkeresetek alakulása (éves)",
-    "mun0004": "A reálkereset alakulása",
-    "mun0025": "Teljes munkaidőben alkalmazásban állók bruttó átlagkeresete",
-    "mun0026": "Teljes munkaidőben alkalmazásban állók nettó átlagkeresete",
-    "mun0030": "Átlagkeresetek nemzetgazdasági áganként (havi)",
-    "mun0039": "Főbb kereseti adatok a munkáltatók teljes körénél",
-    "mun0044": "Közfoglalkoztatottak létszáma és átlagkeresete",
-    "mun0052": "Átlagkeresetek foglalkozások (FEOR) szerint",
-    "mun0058": "A bruttó keresetek mediánértéke",
-    # --- Labor market (mun) ---
-    "mun0001": "A munkaerőpiac legfontosabb éves mutatói",
-    "mun0005": "Foglalkoztatottak száma korcsoportok szerint",
-    "mun0006": "Foglalkoztatási ráta nemenként és korcsoportonként",
-    "mun0007": "Munkanélküliek száma és munkanélküliségi ráta",
-    "mun0008": "Gazdaságilag aktívak legmagasabb iskolai végzettség szerint",
-    "mun0009": "Gazdaságilag inaktívak száma és összetétele",
-    "mun0012": "Munkanélküliségi ráta vármegyénként (negyedéves)",
-    "mun0016": "A munkanélküliség időtartama",
-    "mun0021": "Foglalkoztatottak száma nemzetgazdasági áganként",
+    # --- Labor market & wages (mun — verified 2026-03-21) ---
+    # Labor force survey (LFS) data
+    "mun0001": "A munkaerőpiac legfontosabb éves adatai",
+    "mun0002": "A 15–74 éves népesség gazdasági aktivitása, nemenként",
+    "mun0003": "A 15–74 éves népesség gazdasági aktivitása korcsoportok szerint",
+    "mun0004": "A 15–74 éves népesség gazdasági aktivitása iskolai végzettség szerint",
+    "mun0005": "Foglalkoztatottak száma nemzetgazdasági ágak szerint (TEÁOR'08)",
+    "mun0006": "Foglalkoztatottak száma foglalkozási főcsoportok szerint (FEOR-08)",
+    # mun0007: 404 — kivezetett tábla!
+    "mun0008": "Foglalkoztatottak száma a foglalkoztatás jellege szerint",
+    "mun0009": "Munkanélküliek száma a munkakeresés időtartama szerint",
+    "mun0010": "Munkanélküliek száma az előző munkahelyük nemzetgazdasági ága szerint",
+    "mun0011": "Gazdaságilag nem aktívak száma munkavállalási szándékuk szerint",
+    "mun0012": "Foglalkoztatottak száma rész- vagy teljes munkaidős foglalkozásuk szerint",
+    "mun0098": "A 15–64 éves népesség gazdasági aktivitása nemenként, havonta",
+    "mun0209": "Üres álláshelyek száma és aránya nemzetgazdasági ágak szerint",
+    # Wages & earnings (institutional data, also under mun)
+    "mun0143": "Főbb kereseti adatok – munkáltatók teljes körénél, havonta",
+    "mun0183": "Teljes munkaidőben alkalmazásban állók havi bruttó átlagkeresete áganként",
+    "mun0206": "Teljes munkaidőben alkalmazásban állók bruttó átlagkeresete vármegye szerint",
+    "mun0207": "Teljes munkaidőben alkalmazásban állók nettó átlagkeresete vármegye szerint",
+    "mun0208": "Teljes munkaidőben alkalmazásban állók bruttó átlagkeresete foglalkozások szerint",
     # --- Industry (ipa) ---
     "ipa0001": "Az ipari termelés és értékesítés összefoglaló adatai",
     "ipa0002": "Ipari termelés volumenindexei aláganként",
@@ -1014,14 +1015,13 @@ KSH_STADAT_CATALOG = {
     "bel0005": "Gépjárműüzemanyag-kiskereskedelem forgalma",
     "bel0006": "Csomagküldő és internetes kiskereskedelem forgalma",
     "bel0012": "Kiskereskedelmi forgalom vármegyénként",
-    # --- Foreign trade (kkr — was kul!) ---
-    "kkr0001": "Külkereskedelmi termékforgalom összefoglaló adatai",
-    "kkr0002": "Külkereskedelmi mérleg alakulása",
-    "kkr0003": "Termékforgalom országcsoportok szerint",
-    "kkr0004": "Termékforgalom főbb árucsoportok (SITC) szerint",
-    "kkr0005": "Szolgáltatás-külkereskedelmi forgalom adatai",
-    "kkr0008": "Külkereskedelmi árindexek és cserearány-mutató",
-    "kkr0011": "Külkereskedelmi forgalom (havi)",
+    # --- Foreign trade (kkr — was kul!, verified 2026-03-21) ---
+    "kkr0001": "A külkereskedelmi termékforgalom összefoglaló értékadatai",
+    "kkr0002": "A külkereskedelmi termékforgalom volumenindexei",
+    "kkr0007": "A külkereskedelmi termékforgalom forintban, országok szerint",
+    "kkr0012": "A külkereskedelmi termékforgalom értéke és értékindexei árufőcsoportok szerint",
+    "kkr0024": "Magyarország legfontosabb partnerei a szolgáltatás-külkereskedelemben",
+    "kkr0032": "Magyarország fizetési mérlege – BPM6 (millió euró)",
     # --- Energy (ene) ---
     "ene0001": "Elsődleges energiaforrások mérlege",
     "ene0002": "Végső energiafelhasználás ágazatonként",
@@ -1037,20 +1037,21 @@ KSH_STADAT_CATALOG = {
     "nep0007": "Születéskor várható átlagos élettartam",
     "nep0011": "Belföldi és nemzetközi vándorlás",
     "nep0015": "Népesség vármegyénként (január 1.)",
-    # --- Government finance (gov — was pen!) ---
-    "gov0001": "A kormányzati szektor egyenlege és adóssága",
-    "gov0002": "A kormányzati szektor bevételei és kiadásai",
-    "gov0003": "Az államadósság alakulása a GDP százalékában",
-    "gov0004": "Adó- és társadalombiztosítási bevételek",
-    "gov0011": "Kormányzati pénzügyek (negyedéves)",
-    # --- Tourism (tur) ---
-    "tur0001": "Turisztikai szálláshelyek főbb adatai",
-    "tur0002": "Vendégéjszakák száma és vendégforgalom (havi)",
-    "tur0003": "Szálláshelyek bevételei és kihasználtsága",
-    "tur0004": "A magyar lakosság utazási szokásai",
-    "tur0005": "Turisztikai kiadások és bevételek mérlege",
-    "tur0006": "Vendéglátóhelyek forgalma és száma",
-    "tur0012": "Vendégéjszakák száma vármegyénként",
+    # --- Government finance (pze — NOT gov!, verified 2026-03-21) ---
+    "pze0001": "A kormányzati szektor egyenlege (EDP-jelentés alapján)",
+    "pze0002": "A kormányzati szektor bevételei és kiadásai (ESA 2010)",
+    "pze0003": "A kormányzati szektor adóssága a GDP százalékában",
+    "pze0004": "Az államháztartás funkcionális kiadásai (COFOG)",
+    "pze0005": "Az adó- és társadalombiztosítási bevételek részletezése",
+    # --- Tourism (tur — verified 2026-03-21) ---
+    "tur0001": "A turizmus és vendéglátás fontosabb adatai",
+    "tur0030": "Az utazásszervező és -közvetítő vállalkozások száma és teljesítménye",
+    "tur0031": "Turizmus Szatellit Számlák (TSzSz)",
+    "tur0059": "A szállodák összefoglaló adatai havonta",
+    "tur0060": "A kereskedelmi szálláshelyek bruttó szállásdíjbevételei szállástípusonként",
+    "tur0070": "A külföldre tett utazások főbb mutatói célországok szerint, negyedévente",
+    "tur0077": "A turisztikai szálláshelyek bruttó szállásdíjbevételei szállástípusonként, havonta",
+    "tur0087": "A turisztikai szálláshelyek bruttó árbevételei szállástípusonként",
 }
 
 
@@ -1180,16 +1181,15 @@ async def get_ksh_stadat(
         ara0039 — CPI detailed monthly
         gdp0001 — GDP value and volume change
         gdp0005 — GDP per capita
-        mun0002 — Average wages (annual)
-        mun0004 — Real wages
-        mun0007 — Unemployment rate
-        mun0030 — Wages by sector (monthly)
+        mun0001 — Labor market summary (employment, unemployment)
+        mun0143 — Wages monthly (institutional data)
+        mun0183 — Wages by sector monthly
         ipa0001 — Industrial production
         epi0001 — Construction output
         bel0001 — Retail trade (was ksk!)
         kkr0001 — Foreign trade (was kul!)
         nep0001 — Population and vital statistics
-        gov0003 — Government debt % GDP (was pen!)
+        pze0003 — Government debt % GDP (was pen!)
         ene0001 — Energy balance
         tur0001 — Tourism
 
