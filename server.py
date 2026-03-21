@@ -1070,9 +1070,10 @@ async def _scan_ksh_stadat_background():
         return None
 
     async def scan_category(prefix: str) -> int:
-        """Scan one category in batches of 25, stop when a full batch is empty."""
+        """Scan one category in batches of 50, stop after 3 consecutive empty batches."""
         found = 0
-        batch_size = 25
+        batch_size = 50
+        consecutive_empty = 0
         for batch_start in range(1, 301, batch_size):
             batch_end = min(batch_start + batch_size, 301)
             tasks = [check_table(prefix, num) for num in range(batch_start, batch_end)]
@@ -1080,6 +1081,7 @@ async def _scan_ksh_stadat_background():
 
             batch_hits = [r for r in results if r is not None]
             if batch_hits:
+                consecutive_empty = 0
                 conn = sqlite3.connect(KSH_STADAT_DB_PATH)
                 for code, title, cat in batch_hits:
                     conn.execute(
@@ -1090,8 +1092,10 @@ async def _scan_ksh_stadat_background():
                 conn.close()
                 found += len(batch_hits)
             else:
-                # Full batch empty → no more tables in this category
-                break
+                consecutive_empty += 1
+                if consecutive_empty >= 3:
+                    # 3 consecutive empty batches (150 codes) → stop
+                    break
         return found
 
     # Scan all 27 categories in parallel (3 at a time to be nice to KSH)
