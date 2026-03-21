@@ -1029,7 +1029,7 @@ def _seed_db_from_static():
 
 
 async def _scan_ksh_stadat_background():
-    """Background task: scan all KSH STADAT categories for available tables."""
+    """Background task: scan all KSH STADAT categories in parallel batches."""
     global _ksh_scan_running
     if _ksh_scan_running:
         return
@@ -1038,7 +1038,7 @@ async def _scan_ksh_stadat_background():
     logger.info("Starting KSH STADAT full scan (background)...")
     _init_stadat_db()
     client = await get_client()
-    sem = asyncio.Semaphore(15)  # conservative: 15 concurrent requests
+    sem = asyncio.Semaphore(20)
     now = time.time()
     total_found = 0
 
@@ -1060,36 +1060,43 @@ async def _scan_ksh_stadat_background():
                 pass
         return None
 
-    for prefix in ALL_KSH_PREFIXES:
-        # Scan with early stop: quit after 20 consecutive 404s
-        consecutive_miss = 0
-        batch_found = 0
+    async def scan_category(prefix: str) -> int:
+        """Scan one category in batches of 25, stop when a full batch is empty."""
+        found = 0
+        batch_size = 25
+        for batch_start in range(1, 301, batch_size):
+            batch_end = min(batch_start + batch_size, 301)
+            tasks = [check_table(prefix, num) for num in range(batch_start, batch_end)]
+            results = await asyncio.gather(*tasks)
 
-        for num in range(1, 301):
-            if consecutive_miss >= 20:
-                break
-
-            result = await check_table(prefix, num)
-            if result:
-                consecutive_miss = 0
-                batch_found += 1
-                code, title, cat = result
-                try:
-                    conn = sqlite3.connect(KSH_STADAT_DB_PATH)
+            batch_hits = [r for r in results if r is not None]
+            if batch_hits:
+                conn = sqlite3.connect(KSH_STADAT_DB_PATH)
+                for code, title, cat in batch_hits:
                     conn.execute(
                         "INSERT OR REPLACE INTO stadat_tables (code, title, category, scanned_at) VALUES (?, ?, ?, ?)",
                         (code, title, cat, now),
                     )
-                    conn.commit()
-                    conn.close()
-                except Exception:
-                    pass
+                conn.commit()
+                conn.close()
+                found += len(batch_hits)
             else:
-                consecutive_miss += 1
+                # Full batch empty → no more tables in this category
+                break
+        return found
 
-        total_found += batch_found
-        if batch_found > 0:
-            logger.info(f"  {prefix}: {batch_found} tables found")
+    # Scan all 27 categories in parallel (3 at a time to be nice to KSH)
+    cat_sem = asyncio.Semaphore(3)
+
+    async def scan_with_limit(prefix):
+        async with cat_sem:
+            n = await scan_category(prefix)
+            if n > 0:
+                logger.info(f"  {prefix}: {n} tables")
+            return n
+
+    results = await asyncio.gather(*[scan_with_limit(p) for p in ALL_KSH_PREFIXES])
+    total_found = sum(results)
 
     _ksh_scan_running = False
     logger.info(f"KSH STADAT scan complete: {total_found} tables total")
