@@ -4,15 +4,20 @@ Eurostat + KSH + DBnomics MCP Server
 Unified MCP connector for European, Hungarian, and global statistical data.
 Deployable on Railway with Streamable HTTP transport.
 
-Tools:
+13 Tools:
   - search_datasets: Search Eurostat, KSH, and/or DBnomics datasets by keyword
   - get_eurostat_data: Fetch data from Eurostat (JSON-stat API)
-  - get_ksh_datasets: List/search KSH High-Value Datasets
-  - get_ksh_data: Download KSH dataset as CSV
-  - dbnomics_providers: List all DBnomics data providers (IMF, ECB, OECD, etc.)
-  - dbnomics_search: Search for series across all DBnomics providers
+  - dbnomics_search: Search datasets across DBnomics + list providers (mode="providers")
   - dbnomics_series: Fetch time series data from DBnomics
-  - get_recipe: Look up pre-built query recipes for common macroeconomic data
+  - get_ksh_stadat: Fetch KSH STADAT Hungarian time series
+  - get_ksh_hvd: List/search or download KSH High-Value Datasets
+  - yfinance: Yahoo Finance quotes (action="quote") and history (action="history")
+  - mnb_rates: MNB exchange rates — current (mode="current") or historical (mode="historical")
+  - calculate: Economic calculator (inflation, CAGR, real value, conversion)
+  - recipe_book: Self-learning recipe book — search/add/report/stats (action parameter)
+  - forecast: Macro forecasts (GDP, inflation, unemployment) + OECD CLI (indicator="oecd_cli")
+  - get_fred_data: FRED US economic data
+  - get_economic_calendar: Upcoming data releases (FRED, ECB, Eurostat)
 """
 
 import asyncio
@@ -535,7 +540,7 @@ async def search_datasets(
                 ksh_scored.append((score, {
                     "id": ds.get("id", ""),
                     "title_hu": ds.get("titles", {}).get("hu", ""),
-                    "tool": "get_ksh_data",
+                    "tool": "get_ksh_hvd",
                     "source": "ksh_hvd",
                 }))
 
@@ -663,65 +668,62 @@ async def get_eurostat_data(
 
 
 @mcp.tool()
-async def get_ksh_datasets(
+async def get_ksh_hvd(
+    dataset_id: str = "",
     query: str = "",
     lang: str = "hu",
-) -> str:
-    """List or search KSH (Hungarian Central Statistical Office) High-Value Datasets.
-
-    Args:
-        query: Optional search keywords (searches in titles, descriptions, themes, tags)
-        lang: Preferred language for titles - "hu" or "en" (default: "hu")
-
-    Returns:
-        JSON list of available KSH datasets with IDs, titles, themes and tags.
-    """
-    datasets = await _load_ksh_datasets()
-
-    if query:
-        query_lower = query.lower()
-        keywords = query_lower.split()
-        filtered = []
-        for ds in datasets:
-            searchable = json.dumps(ds, ensure_ascii=False).lower()
-            if all(kw in searchable for kw in keywords):
-                filtered.append(ds)
-        datasets = filtered
-
-    # Format output
-    result = []
-    for ds in datasets[:50]:  # Cap at 50
-        entry = {
-            "id": ds.get("id", ""),
-            "title": ds.get("titles", {}).get(lang, ds.get("titles", {}).get("hu", "")),
-            "description": ds.get("descriptions", {}).get(lang, ""),
-            "themes": ds.get("themes", {}).get(lang, []),
-            "tags": ds.get("tags", {}).get(lang, []),
-        }
-        result.append(entry)
-
-    return json.dumps(
-        {"total": len(result), "language": lang, "datasets": result},
-        ensure_ascii=False,
-        indent=2,
-    )
-
-
-@mcp.tool()
-async def get_ksh_data(
-    dataset_id: str,
     max_rows: int = 200,
 ) -> str:
-    """Download data from a KSH High-Value Dataset.
+    """KSH High-Value Datasets — list/search or download data.
+
+    Two modes:
+      - If dataset_id is empty: list or search available KSH HVD datasets.
+      - If dataset_id is provided: download data from that dataset.
 
     Args:
-        dataset_id: KSH dataset UUID (get from get_ksh_datasets or search_datasets)
-        max_rows: Maximum rows to return (default: 200, max: 1000)
+        dataset_id: KSH dataset UUID. If provided, downloads data. If empty, lists/searches datasets.
+        query: Search keywords when listing datasets (searches titles, descriptions, themes, tags).
+               Ignored when dataset_id is provided.
+        lang: Preferred language for titles - "hu" or "en" (default: "hu"). Used in list mode.
+        max_rows: Maximum rows to return when downloading data (default: 200, max: 1000)
 
     Returns:
-        JSON with dataset metadata and CSV data parsed as rows.
-        First fetches metadata.rdf to find download URLs, then downloads CSV.
+        List mode: JSON list of available KSH datasets with IDs, titles, themes and tags.
+        Data mode: JSON with dataset metadata and CSV data parsed as rows.
     """
+    # --- LIST / SEARCH MODE ---
+    if not dataset_id.strip():
+        datasets = await _load_ksh_datasets()
+
+        if query:
+            query_lower = query.lower()
+            keywords = query_lower.split()
+            filtered = []
+            for ds in datasets:
+                searchable = json.dumps(ds, ensure_ascii=False).lower()
+                if all(kw in searchable for kw in keywords):
+                    filtered.append(ds)
+            datasets = filtered
+
+        # Format output
+        result = []
+        for ds in datasets[:50]:  # Cap at 50
+            entry = {
+                "id": ds.get("id", ""),
+                "title": ds.get("titles", {}).get(lang, ds.get("titles", {}).get("hu", "")),
+                "description": ds.get("descriptions", {}).get(lang, ""),
+                "themes": ds.get("themes", {}).get(lang, []),
+                "tags": ds.get("tags", {}).get(lang, []),
+            }
+            result.append(entry)
+
+        return json.dumps(
+            {"total": len(result), "language": lang, "datasets": result},
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    # --- DATA DOWNLOAD MODE ---
     max_rows = min(max_rows, 1000)
     client = await get_client()
 
@@ -828,71 +830,76 @@ async def get_ksh_data(
         return json.dumps({
             "error": f"HTTP {e.response.status_code}",
             "message": str(e),
-            "hint": "Check dataset_id. Use get_ksh_datasets to find valid IDs.",
+            "hint": "Check dataset_id. Use get_ksh_hvd() without dataset_id to find valid IDs.",
         }, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)}, indent=2)
 
 
 @mcp.tool()
-async def dbnomics_providers(
-    query: str = "",
-) -> str:
-    """List DBnomics data providers (IMF, ECB, OECD, World Bank, national offices, etc.).
-
-    Args:
-        query: Optional search keyword to filter providers (e.g. "IMF", "bank", "Hungary")
-
-    Returns:
-        JSON list of providers with codes, names, and dataset counts.
-        Use provider codes with dbnomics_search and dbnomics_series.
-    """
-    providers = await _load_dbnomics_providers()
-
-    if query:
-        query_lower = query.lower()
-        providers = [
-            p for p in providers
-            if query_lower in json.dumps(p, ensure_ascii=False).lower()
-        ]
-
-    result = []
-    for p in providers[:100]:
-        result.append({
-            "code": p.get("code", ""),
-            "name": p.get("name", ""),
-            "region": p.get("region", ""),
-            "nb_datasets": p.get("nb_datasets", 0),
-            "nb_series": p.get("nb_series", 0),
-        })
-
-    output = {"total": len(result), "providers": result}
-    if query and not result:
-        output["hint"] = (
-            f"No providers matched '{query}'. "
-            "Provider names are usually organization names (e.g. 'IMF', 'ECB', 'OECD', 'World Bank'). "
-            "Try a broader term or use dbnomics_search to find data directly."
-        )
-    return json.dumps(output, ensure_ascii=False, indent=2)
-
-
-@mcp.tool()
 async def dbnomics_search(
-    query: str,
+    query: str = "",
     provider: str = "",
     limit: int = 20,
+    mode: str = "search",
 ) -> str:
-    """Search for datasets and series across DBnomics (700M+ series from 70+ providers).
+    """Search for datasets across DBnomics (700M+ series from 70+ providers), or list providers.
+
+    Two modes:
+      - mode="search" (default): Search for datasets/series by keyword.
+      - mode="providers": List all DBnomics data providers (IMF, ECB, OECD, World Bank, etc.).
 
     Args:
-        query: Search keywords (e.g. "GDP per capita", "consumer price index", "unemployment rate")
-        provider: Optional provider code to restrict search (e.g. "IMF", "OECD", "ECB", "WB", "Eurostat")
-        limit: Maximum results (default: 20, max: 50)
+        query: Search keywords (e.g. "GDP per capita", "consumer price index", "unemployment rate").
+               In providers mode, optionally filter providers (e.g. "IMF", "bank", "Hungary").
+        provider: Optional provider code to restrict search (e.g. "IMF", "OECD", "ECB", "WB", "Eurostat").
+                  Only used in search mode.
+        limit: Maximum results (default: 20, max: 50). Only used in search mode.
+        mode: "search" (default) to search datasets, "providers" to list data providers.
 
     Returns:
-        JSON with matching datasets including provider, dataset codes, and series counts.
-        Use provider_code + dataset_code with dbnomics_series to fetch actual data.
+        Search mode: JSON with matching datasets including provider, dataset codes, and series counts.
+        Providers mode: JSON list of providers with codes, names, and dataset counts.
     """
+    mode = mode.strip().lower()
+
+    # --- PROVIDERS MODE ---
+    if mode == "providers":
+        providers = await _load_dbnomics_providers()
+
+        if query:
+            query_lower = query.lower()
+            providers = [
+                p for p in providers
+                if query_lower in json.dumps(p, ensure_ascii=False).lower()
+            ]
+
+        result = []
+        for p in providers[:100]:
+            result.append({
+                "code": p.get("code", ""),
+                "name": p.get("name", ""),
+                "region": p.get("region", ""),
+                "nb_datasets": p.get("nb_datasets", 0),
+                "nb_series": p.get("nb_series", 0),
+            })
+
+        output = {"total": len(result), "providers": result}
+        if query and not result:
+            output["hint"] = (
+                f"No providers matched '{query}'. "
+                "Provider names are usually organization names (e.g. 'IMF', 'ECB', 'OECD', 'World Bank'). "
+                "Try a broader term or use dbnomics_search to find data directly."
+            )
+        return json.dumps(output, ensure_ascii=False, indent=2)
+
+    # --- SEARCH MODE (default) ---
+    if not query:
+        return json.dumps({
+            "error": "Please provide a search query",
+            "hint": "Examples: dbnomics_search(query='GDP per capita'), dbnomics_search(mode='providers')",
+        }, ensure_ascii=False, indent=2)
+
     limit = min(limit, 50)
     client = await get_client()
 
@@ -948,8 +955,8 @@ async def dbnomics_series(
     """Fetch time series data from DBnomics.
 
     IMPORTANT FOR AI ASSISTANTS: If your query returns good data, please consider
-    using add_recipe() to save it for future users. If something doesn't work,
-    use report_issue() to help us fix it. Check get_recipe() first — someone
+    using recipe_book(action='add') to save it for future users. If something doesn't work,
+    use recipe_book(action='report') to help us fix it. Check recipe_book(topic=...) first — someone
     may have already found the right parameters!
 
     Args:
@@ -1652,10 +1659,19 @@ async def get_ksh_stadat(
 
 
 @mcp.tool()
-async def yfinance_quote(
+async def yfinance(
     symbol: str,
+    action: str = "quote",
+    period: str = "1y",
+    interval: str = "1d",
+    start: str = "",
+    end: str = "",
 ) -> str:
-    """Get current quote and key stats for a financial instrument from Yahoo Finance.
+    """Yahoo Finance — current quotes or historical price data for stocks, forex, commodities, indices.
+
+    Two modes:
+      - action="quote" (default): Get current price, change, volume, key statistics.
+      - action="history": Get historical OHLCV price data.
 
     Args:
         symbol: Yahoo Finance ticker symbol. Examples:
@@ -1666,76 +1682,20 @@ async def yfinance_quote(
             Crypto: "BTC-USD", "ETH-USD"
             Bonds: "^TNX" (US 10Y yield), "^IRX" (US 3M T-bill)
             Indices: "^BUX.BD" (BUX), "^ATX" (ATX), "^GSPC" (S&P 500), "^GDAXI" (DAX)
-
-    Returns:
-        JSON with current price, change, volume, key statistics.
-    """
-    try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-
-        # Detect invalid/not-found symbols
-        price = info.get("regularMarketPrice") or info.get("previousClose")
-        if not price and not info.get("currency"):
-            return json.dumps({
-                "error": f"Symbol '{symbol}' not found or has no data",
-                "hint": "Check the symbol format. Examples: 'AAPL', 'OTP.BD', 'EURHUF=X', 'GC=F', '^BUX'",
-            }, indent=2)
-
-        # Extract most useful fields
-        result = {
-            "symbol": symbol,
-            "name": info.get("shortName") or info.get("longName", symbol),
-            "currency": info.get("currency", ""),
-            "price": price,
-            "previous_close": info.get("previousClose"),
-            "open": info.get("regularMarketOpen") or info.get("open"),
-            "day_high": info.get("regularMarketDayHigh") or info.get("dayHigh"),
-            "day_low": info.get("regularMarketDayLow") or info.get("dayLow"),
-            "volume": info.get("regularMarketVolume") or info.get("volume"),
-            "market_cap": info.get("marketCap"),
-            "52w_high": info.get("fiftyTwoWeekHigh"),
-            "52w_low": info.get("fiftyTwoWeekLow"),
-            "pe_ratio": info.get("trailingPE"),
-            "dividend_yield": info.get("dividendYield"),
-            "exchange": info.get("exchange", ""),
-        }
-        # Remove None values
-        result = {k: v for k, v in result.items() if v is not None}
-
-        return json.dumps(result, ensure_ascii=False, indent=2)
-
-    except Exception as e:
-        return json.dumps({
-            "error": str(e),
-            "hint": f"Check symbol '{symbol}'. Examples: 'AAPL', 'EURHUF=X', 'GC=F', '^BUX'",
-        }, indent=2)
-
-
-@mcp.tool()
-async def yfinance_history(
-    symbol: str,
-    period: str = "1y",
-    interval: str = "1d",
-    start: str = "",
-    end: str = "",
-) -> str:
-    """Get historical price data from Yahoo Finance.
-
-    Args:
-        symbol: Ticker symbol (e.g. "EURHUF=X", "^BUX", "CL=F", "AAPL")
-        period: Time period - "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "max"
+        action: "quote" (default) for current snapshot, "history" for historical data.
+        period: (history only) Time period - "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "max".
                 Ignored if start/end provided.
-        interval: Data frequency - "1d" (daily), "1wk" (weekly), "1mo" (monthly).
+        interval: (history only) Data frequency - "1d" (daily), "1wk" (weekly), "1mo" (monthly).
                   For intraday: "1m", "5m", "15m", "1h" (max 7 days).
-        start: Start date "YYYY-MM-DD" (optional, overrides period)
-        end: End date "YYYY-MM-DD" (optional)
+        start: (history only) Start date "YYYY-MM-DD" (optional, overrides period)
+        end: (history only) End date "YYYY-MM-DD" (optional)
 
     Returns:
-        JSON with OHLCV price history.
+        Quote mode: JSON with current price, change, volume, key statistics.
+        History mode: JSON with OHLCV price history.
 
     Common symbols for economists:
-        Forex: EURHUF=X, USDHUF=X, EURUSD=X, USDTRY=X, USDRUB=X, USDCNY=X
+        Forex: EURHUF=X, USDHUF=X, EURUSD=X, USDTRY=X, USDCNY=X
         CEE indices: ^BUX.BD (BUX), ^ATX (ATX Vienna), ^GSPC (S&P 500), ^GDAXI (DAX)
         Budapest: OTP.BD, MOL.BD, RICHTER.BD, MTELEKOM.BD, 4IG.BD
         Vienna: EBS.VI (Erste), OMV.VI, RBI.VI (Raiffeisen)
@@ -1744,6 +1704,52 @@ async def yfinance_history(
         Commodities: CL=F (WTI oil), BZ=F (Brent), NG=F (natgas), GC=F (gold), ZW=F (wheat)
         Bonds: ^TNX (US 10Y yield), ^IRX (US 3M T-bill)
     """
+    action = action.strip().lower()
+
+    # --- QUOTE MODE ---
+    if action == "quote":
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+
+            # Detect invalid/not-found symbols
+            price = info.get("regularMarketPrice") or info.get("previousClose")
+            if not price and not info.get("currency"):
+                return json.dumps({
+                    "error": f"Symbol '{symbol}' not found or has no data",
+                    "hint": "Check the symbol format. Examples: 'AAPL', 'OTP.BD', 'EURHUF=X', 'GC=F', '^BUX'",
+                }, indent=2)
+
+            # Extract most useful fields
+            result = {
+                "symbol": symbol,
+                "name": info.get("shortName") or info.get("longName", symbol),
+                "currency": info.get("currency", ""),
+                "price": price,
+                "previous_close": info.get("previousClose"),
+                "open": info.get("regularMarketOpen") or info.get("open"),
+                "day_high": info.get("regularMarketDayHigh") or info.get("dayHigh"),
+                "day_low": info.get("regularMarketDayLow") or info.get("dayLow"),
+                "volume": info.get("regularMarketVolume") or info.get("volume"),
+                "market_cap": info.get("marketCap"),
+                "52w_high": info.get("fiftyTwoWeekHigh"),
+                "52w_low": info.get("fiftyTwoWeekLow"),
+                "pe_ratio": info.get("trailingPE"),
+                "dividend_yield": info.get("dividendYield"),
+                "exchange": info.get("exchange", ""),
+            }
+            # Remove None values
+            result = {k: v for k, v in result.items() if v is not None}
+
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        except Exception as e:
+            return json.dumps({
+                "error": str(e),
+                "hint": f"Check symbol '{symbol}'. Examples: 'AAPL', 'EURHUF=X', 'GC=F', '^BUX'",
+            }, indent=2)
+
+    # --- HISTORY MODE ---
     try:
         ticker = yf.Ticker(symbol)
 
@@ -1916,75 +1922,81 @@ def _get_mnb():
 
 
 @mcp.tool()
-def mnb_current_rates(
+def mnb_rates(
+    mode: str = "current",
     currencies: str = "",
+    start_date: str = "",
+    end_date: str = "",
 ) -> str:
-    """Get current official MNB (Hungarian National Bank) exchange rates for HUF.
+    """Official MNB (Hungarian National Bank) HUF exchange rates — current or historical.
+
+    Two modes:
+      - mode="current" (default): Get today's official MNB exchange rates.
+      - mode="historical": Get daily rates for a date range (needs start_date, end_date).
 
     Args:
-        currencies: Comma-separated currency codes to filter (e.g. "EUR,USD,GBP").
-                    Empty = all 32 active currencies. Available: EUR, USD, GBP, CHF, JPY,
+        mode: "current" (default) for today's rates, "historical" for a date range.
+        currencies: Comma-separated currency codes (e.g. "EUR,USD,GBP").
+                    Current mode: empty = all 32 active currencies.
+                    Historical mode: default "EUR,USD". Available: EUR, USD, GBP, CHF, JPY,
                     CZK, PLN, RON, HRK, SEK, NOK, DKK, AUD, CAD, CNY, TRY, etc.
+        start_date: (historical only) Start date YYYY-MM-DD (e.g. "2024-01-01"). Data from 1949-01-03.
+        end_date: (historical only) End date YYYY-MM-DD (e.g. "2024-12-31")
 
     Returns:
-        JSON with official MNB HUF exchange rates (1 unit of foreign currency = X HUF).
+        Current mode: JSON with official MNB HUF exchange rates (1 unit of foreign currency = X HUF).
+        Historical mode: JSON with daily MNB rates. Note: no rates on weekends/holidays.
     """
-    try:
-        client = _get_mnb()
-        day = client.get_current_exchange_rates()
+    mode = mode.strip().lower()
 
-        all_rates = day.rates
-        available_currencies = sorted(r.currency for r in all_rates)
+    # --- CURRENT MODE ---
+    if mode == "current":
+        try:
+            client = _get_mnb()
+            day = client.get_current_exchange_rates()
 
-        if currencies:
-            wanted = {c.strip().upper() for c in currencies.split(",") if c.strip()}
-            rates = [r for r in all_rates if r.currency in wanted]
-            # Warn about unrecognized currencies
-            found = {r.currency for r in rates}
-            not_found = wanted - found
-            result = {
-                "date": day.date.isoformat(),
-                "source": "Magyar Nemzeti Bank (MNB)",
-                "base": "HUF",
-                "count": len(rates),
-                "rates": [{"currency": r.currency, "rate": r.rate} for r in rates],
-            }
-            if not_found:
-                result["warning"] = f"Unknown currency codes: {', '.join(sorted(not_found))}"
-                result["available_currencies"] = available_currencies
-        else:
-            rates = all_rates
-            result = {
-                "date": day.date.isoformat(),
-                "source": "Magyar Nemzeti Bank (MNB)",
-                "base": "HUF",
-                "count": len(rates),
-                "rates": [{"currency": r.currency, "rate": r.rate} for r in rates],
-            }
+            all_rates = day.rates
+            available_currencies = sorted(r.currency for r in all_rates)
 
-        return json.dumps(result, ensure_ascii=False, indent=2)
+            if currencies:
+                wanted = {c.strip().upper() for c in currencies.split(",") if c.strip()}
+                rates = [r for r in all_rates if r.currency in wanted]
+                # Warn about unrecognized currencies
+                found = {r.currency for r in rates}
+                not_found = wanted - found
+                result = {
+                    "date": day.date.isoformat(),
+                    "source": "Magyar Nemzeti Bank (MNB)",
+                    "base": "HUF",
+                    "count": len(rates),
+                    "rates": [{"currency": r.currency, "rate": r.rate} for r in rates],
+                }
+                if not_found:
+                    result["warning"] = f"Unknown currency codes: {', '.join(sorted(not_found))}"
+                    result["available_currencies"] = available_currencies
+            else:
+                rates = all_rates
+                result = {
+                    "date": day.date.isoformat(),
+                    "source": "Magyar Nemzeti Bank (MNB)",
+                    "base": "HUF",
+                    "count": len(rates),
+                    "rates": [{"currency": r.currency, "rate": r.rate} for r in rates],
+                }
 
-    except Exception as e:
-        return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps(result, ensure_ascii=False, indent=2)
 
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
 
-@mcp.tool()
-def mnb_historical_rates(
-    start_date: str,
-    end_date: str,
-    currencies: str = "EUR,USD",
-) -> str:
-    """Get historical MNB exchange rates for a date range.
-
-    Args:
-        start_date: Start date YYYY-MM-DD (e.g. "2024-01-01"). Data available from 1949-01-03.
-        end_date: End date YYYY-MM-DD (e.g. "2024-12-31")
-        currencies: Comma-separated currency codes (e.g. "EUR,USD,CHF"). Default: "EUR,USD"
-
-    Returns:
-        JSON with daily MNB rates. Note: no rates on weekends/holidays.
-    """
+    # --- HISTORICAL MODE ---
     from datetime import date as date_type
+
+    if not start_date or not end_date:
+        return json.dumps({
+            "error": "Historical mode requires start_date and end_date",
+            "hint": "Use mnb_rates(mode='historical', start_date='2024-01-01', end_date='2024-12-31')",
+        }, indent=2)
 
     try:
         start = date_type.fromisoformat(start_date)
@@ -2068,8 +2080,8 @@ _SEED_RECIPES: list[dict] = [
     {"id": "hicp_EA_index", "keywords": ["hicp", "infláció", "inflation", "eurozóna", "eurozone", "ea", "index", "eurostat"], "provider": "Eurostat", "dataset": "prc_hicp_aind", "dimensions": {"geo": "EA", "coicop": "CP00", "unit": "INX_A_AVG"}, "note": "Eurostat — Euro area HICP annual average index (2015=100)"},
     {"id": "hicp_annual_rate", "keywords": ["hicp", "infláció", "inflation", "éves", "annual", "rate", "eurostat"], "provider": "Eurostat", "dataset": "prc_hicp_manr", "dimensions": {"coicop": "CP00"}, "note": "Eurostat — HICP annual rate of change (monthly, geo parameterizable)"},
     # --- ÁRFOLYAM / EXCHANGE RATES ---
-    {"id": "eur_huf_current", "keywords": ["árfolyam", "exchange", "eur", "huf", "forint", "aktuális", "current", "mnb", "mai"], "provider": "MNB", "tool": "mnb_current_rates", "dimensions": {"currencies": "EUR"}, "note": "MNB current official EUR/HUF rate — use mnb_current_rates(currencies='EUR')"},
-    {"id": "eur_huf_historical", "keywords": ["árfolyam", "exchange", "eur", "huf", "forint", "historikus", "historical", "mnb", "múlt"], "provider": "MNB", "tool": "mnb_historical_rates", "dimensions": {"currencies": "EUR"}, "note": "MNB historical EUR/HUF rates — use mnb_historical_rates(start_date, end_date, currencies='EUR')"},
+    {"id": "eur_huf_current", "keywords": ["árfolyam", "exchange", "eur", "huf", "forint", "aktuális", "current", "mnb", "mai"], "provider": "MNB", "tool": "mnb_rates", "dimensions": {"currencies": "EUR"}, "note": "MNB current official EUR/HUF rate — use mnb_rates(currencies='EUR')"},
+    {"id": "eur_huf_historical", "keywords": ["árfolyam", "exchange", "eur", "huf", "forint", "historikus", "historical", "mnb", "múlt"], "provider": "MNB", "tool": "mnb_rates", "dimensions": {"currencies": "EUR"}, "note": "MNB historical EUR/HUF rates — use mnb_rates(mode='historical', start_date=..., end_date=..., currencies='EUR')"},
     # --- GDP ---
     {"id": "gdp_HU", "keywords": ["gdp", "magyarország", "hungary", "ksh", "bruttó hazai termék"], "provider": "KSH", "dataset": "gdp0001", "tool": "get_ksh_stadat", "note": "KSH STADAT gdp0001 — Hungary GDP value and volume change"},
     {"id": "gdp_growth_EU", "keywords": ["gdp", "növekedés", "growth", "eu", "európa", "europe", "eurostat"], "provider": "Eurostat", "dataset": "namq_10_gdp", "dimensions": {"unit": "CLV_PCH_PRE", "s_adj": "SCA", "na_item": "B1GQ"}, "note": "Eurostat namq_10_gdp — EU GDP growth rate (quarterly, seasonally adjusted). Alt: tec00115 for annual overview."},
@@ -2236,12 +2248,12 @@ def _nudge_tip(tool_name: str, query_worked: bool, has_recipe: bool) -> str:
     if query_worked and not has_recipe:
         return (
             "💡 TIP: This query worked! Consider saving it as a recipe with "
-            "add_recipe() so others can find it instantly next time."
+            "recipe_book(action='add') so others can find it instantly next time."
         )
     if not query_worked:
         return (
             "💡 TIP: If you found the right data through another method, "
-            "please add_recipe() it. If something is broken, use report_issue()."
+            "please recipe_book(action='add') it. If something is broken, use recipe_book(action='report')."
         )
     return ""
 
@@ -2250,89 +2262,186 @@ _load_usage_stats()
 
 
 @mcp.tool()
-def get_usage_stats() -> str:
-    """View usage statistics — which tools and AI clients use the server most.
-
-    Returns:
-        JSON with daily breakdown per tool and per client, plus global totals.
-    """
-    stats = _load_usage_stats()
-    return json.dumps(stats, ensure_ascii=False, indent=2)
-
-
-@mcp.tool()
-def report_issue(
-    tool_name: str,
-    description: str,
+def recipe_book(
+    action: str = "search",
+    topic: str = "",
+    id: str = "",
+    provider: str = "",
+    dataset: str = "",
+    note: str = "",
+    keywords: str = "",
+    dimensions: str = "",
+    series_code: str = "",
+    tool: str = "",
+    tool_name: str = "",
+    description: str = "",
     client: str = "",
 ) -> str:
-    """Report a data quality issue, bug, or suggestion for the MCP server.
+    """Self-learning recipe book — search, add recipes, report issues, or view usage stats.
 
-    AI assistants: if you encounter wrong data, broken queries, or missing
-    recipes, please report them here! This helps improve the server for everyone.
+    Four actions:
+      - action="search" (default): Look up pre-built query recipes by topic keyword.
+      - action="add": Add a new recipe to the recipe book.
+      - action="report": Report a data quality issue, bug, or suggestion.
+      - action="stats": View usage statistics.
 
     Args:
-        tool_name: Which tool had the issue (e.g. "forecast", "get_eurostat_data", "get_recipe")
-        description: What went wrong or what could be improved
-        client: Your name/model (e.g. "Claude Haiku", "ChatGPT-4o", "Gemini")
+        action: "search" (default), "add", "report", or "stats".
+
+        (search) topic: Search query, e.g. "kamat lengyelország", "wages slovenia",
+                        "hicp inflation", "gdp hungary", "eur huf", "cpi magyarország"
+
+        (add) id: Unique recipe ID (e.g. "short_rate_CZ", "hicp_DE")
+        (add) provider: Data provider (e.g. "OECD", "Eurostat", "IMF", "ECB", "KSH")
+        (add) dataset: Dataset code (e.g. "DP_LIVE", "prc_hicp_manr", "IFS")
+        (add) note: Human-readable description of what this recipe returns
+        (add) keywords: Comma-separated search keywords (e.g. "czech,cseh,kamat,rate,CZE,interest")
+        (add) dimensions: JSON string of dimension filters (e.g. '{"LOCATION":"CZE","INDICATOR":"STINT"}')
+        (add) series_code: Specific series code if applicable
+        (add) tool: MCP tool to use (e.g. "get_ksh_stadat", "mnb_rates"). Empty = dbnomics_series.
+
+        (report) tool_name: Which tool had the issue (e.g. "forecast", "get_eurostat_data")
+        (report) description: What went wrong or what could be improved
+        (report) client: Your name/model (e.g. "Claude Haiku", "ChatGPT-4o", "Gemini")
 
     Returns:
-        Confirmation that the issue was logged.
+        Search: JSON with matching recipes (provider, dataset, dimensions, tool, note, stats).
+        Add: JSON confirmation with the saved recipe.
+        Report: Confirmation that the issue was logged.
+        Stats: JSON with daily breakdown per tool and per client, plus global totals.
     """
-    from datetime import datetime as dt
-    issues_path = os.path.join(_RECIPES_DIR, "issues.json")
-    issues = []
-    try:
-        if os.path.exists(issues_path):
-            with open(issues_path, "r", encoding="utf-8") as f:
-                issues = json.load(f)
-    except Exception:
+    action = action.strip().lower()
+
+    # --- STATS MODE ---
+    if action == "stats":
+        stats = _load_usage_stats()
+        return json.dumps(stats, ensure_ascii=False, indent=2)
+
+    # --- REPORT MODE ---
+    if action == "report":
+        if not tool_name or not description:
+            return json.dumps({
+                "error": "tool_name and description are required for reporting issues",
+                "hint": "recipe_book(action='report', tool_name='forecast', description='...', client='Claude')",
+            }, indent=2)
+
+        from datetime import datetime as dt
+        issues_path = os.path.join(_RECIPES_DIR, "issues.json")
         issues = []
+        try:
+            if os.path.exists(issues_path):
+                with open(issues_path, "r", encoding="utf-8") as f:
+                    issues = json.load(f)
+        except Exception:
+            issues = []
 
-    issue = {
-        "timestamp": dt.now().isoformat(),
-        "tool": tool_name.strip(),
-        "description": description.strip(),
-        "client": client.strip() or "unknown",
-        "status": "open",
-    }
-    issues.append(issue)
+        issue = {
+            "timestamp": dt.now().isoformat(),
+            "tool": tool_name.strip(),
+            "description": description.strip(),
+            "client": client.strip() or "unknown",
+            "status": "open",
+        }
+        issues.append(issue)
 
-    try:
-        with open(issues_path, "w", encoding="utf-8") as f:
-            json.dump(issues, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        return json.dumps({"error": f"Failed to save issue: {e}"})
+        try:
+            with open(issues_path, "w", encoding="utf-8") as f:
+                json.dump(issues, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to save issue: {e}"})
 
-    logger.info(f"Issue reported by {issue['client']}: {tool_name} — {description[:100]}")
-    return json.dumps({
-        "status": "logged",
-        "issue_number": len(issues),
-        "message": "Thank you! The issue has been logged and will be reviewed.",
-        "total_open_issues": sum(1 for i in issues if i.get("status") == "open"),
-    }, ensure_ascii=False, indent=2)
+        logger.info(f"Issue reported by {issue['client']}: {tool_name} — {description[:100]}")
+        return json.dumps({
+            "status": "logged",
+            "issue_number": len(issues),
+            "message": "Thank you! The issue has been logged and will be reviewed.",
+            "total_open_issues": sum(1 for i in issues if i.get("status") == "open"),
+        }, ensure_ascii=False, indent=2)
 
+    # --- ADD MODE ---
+    if action == "add":
+        recipe_id = id.strip()
+        if not recipe_id or not provider.strip() or not dataset.strip():
+            return json.dumps({"error": "id, provider, and dataset are required"})
 
-@mcp.tool()
-def get_recipe(topic: str) -> str:
-    """Look up pre-built query recipes for common macroeconomic data requests.
+        # Parse dimensions
+        dims = {}
+        if dimensions:
+            try:
+                dims = json.loads(dimensions)
+            except json.JSONDecodeError:
+                return json.dumps({"error": f"Invalid JSON in dimensions: {dimensions}"})
 
-    Returns the correct provider, dataset, dimensions, and series codes so you
-    don't have to guess or search. The recipe book grows automatically as users
-    discover new data sources via dbnomics_series. Supports HU/EN keyword matching.
+        # Parse keywords
+        kw_list = [k.strip().lower() for k in keywords.split(",") if k.strip()] if keywords else []
+        # Auto-add provider and dataset as keywords
+        for auto_kw in [provider.lower(), dataset.lower()]:
+            if auto_kw not in kw_list:
+                kw_list.append(auto_kw)
 
-    Args:
-        topic: Search query, e.g. "kamat lengyelország", "wages slovenia",
-               "hicp inflation", "gdp hungary", "eur huf", "cpi magyarország"
+        # Check for duplicate signature
+        existing = _find_recipe_by_signature(provider, dataset, dims)
+        if existing:
+            # Merge keywords
+            merged = list(existing.get("keywords", []))
+            added = 0
+            for kw in kw_list:
+                if kw not in merged:
+                    merged.append(kw)
+                    added += 1
+            existing["keywords"] = merged
+            if note and note != existing.get("note", ""):
+                existing["note"] = note
+            _save_recipes()
+            return json.dumps({
+                "action": "merged_keywords",
+                "id": existing["id"],
+                "keywords_added": added,
+                "total_keywords": len(merged),
+                "recipe": existing,
+            }, ensure_ascii=False, indent=2)
 
-    Returns:
-        JSON with matching recipes (provider, dataset, dimensions, tool, note, stats).
-        If no match: error + hint to use search_datasets or dbnomics_search.
-    """
+        # Check for duplicate ID
+        if any(r["id"] == recipe_id for r in _recipes_db):
+            return json.dumps({"error": f"Recipe ID '{recipe_id}' already exists. Choose a different ID."})
+
+        recipe = {
+            "id": recipe_id,
+            "keywords": kw_list,
+            "provider": provider.strip(),
+            "dataset": dataset.strip(),
+            "note": note.strip(),
+            "call_count": 0,
+            "last_used": None,
+            "source": "manual",
+        }
+        if dims:
+            recipe["dimensions"] = dims
+        if series_code:
+            recipe["series_code"] = series_code.strip()
+        if tool:
+            recipe["tool"] = tool.strip()
+
+        _recipes_db.append(recipe)
+        _save_recipes()
+        logger.info(f"Manually added recipe: {recipe_id}")
+
+        return json.dumps({
+            "action": "added",
+            "total_recipes": len(_recipes_db),
+            "recipe": recipe,
+        }, ensure_ascii=False, indent=2)
+
+    # --- SEARCH MODE (default) ---
+    if not topic:
+        return json.dumps({
+            "error": "Please provide a topic to search for",
+            "hint": "recipe_book(topic='wages slovenia') or recipe_book(topic='kamat lengyelország')",
+            "total_recipes": len(_recipes_db),
+        }, ensure_ascii=False, indent=2)
+
     from datetime import date as date_cls
     query_words = topic.lower().split()
-    if not query_words:
-        return json.dumps({"error": "empty query", "hint": "provide a topic like 'wages slovenia' or 'kamat lengyelország'"})
 
     scored: list[tuple[int, dict]] = []
     for recipe in _recipes_db:
@@ -2351,7 +2460,7 @@ def get_recipe(topic: str) -> str:
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    _track_usage("get_recipe", params={"topic": topic})
+    _track_usage("recipe_book", params={"topic": topic})
 
     if not scored:
         return json.dumps({
@@ -2359,8 +2468,8 @@ def get_recipe(topic: str) -> str:
             "query": topic,
             "hint": "use search_datasets or dbnomics_search to find the right dataset. "
                     "Successful queries auto-save as recipes!",
-            "tip": "💡 If you find the right data, please use add_recipe() to save it "
-                   "so others can find it instantly. Use report_issue() if something is broken.",
+            "tip": "If you find the right data, please use recipe_book(action='add', ...) to save it "
+                   "so others can find it instantly. Use recipe_book(action='report', ...) if something is broken.",
             "total_recipes": len(_recipes_db),
             "available_topics": sorted(set(r["id"] for r in _recipes_db))[:30],
         }, ensure_ascii=False, indent=2)
@@ -2387,108 +2496,6 @@ def get_recipe(topic: str) -> str:
         "matches": len(results),
         "total_recipes": len(_recipes_db),
         "recipes": results,
-    }, ensure_ascii=False, indent=2)
-
-
-@mcp.tool()
-def add_recipe(
-    id: str,
-    provider: str,
-    dataset: str,
-    note: str,
-    keywords: str = "",
-    dimensions: str = "",
-    series_code: str = "",
-    tool: str = "",
-) -> str:
-    """Add a new recipe to the self-learning recipe book.
-
-    Recipes are persistent — they survive server restarts. If the same
-    provider+dataset+dimensions combo already exists, keywords are merged.
-
-    Args:
-        id: Unique recipe ID (e.g. "short_rate_CZ", "hicp_DE")
-        provider: Data provider (e.g. "OECD", "Eurostat", "IMF", "ECB", "KSH")
-        dataset: Dataset code (e.g. "DP_LIVE", "prc_hicp_manr", "IFS")
-        note: Human-readable description of what this recipe returns
-        keywords: Comma-separated search keywords (e.g. "czech,cseh,kamat,rate,CZE,interest")
-        dimensions: JSON string of dimension filters (e.g. '{"LOCATION":"CZE","INDICATOR":"STINT"}')
-        series_code: Specific series code if applicable (e.g. "B.U2.EUR.4F.KR.MRR_FR.LEV")
-        tool: MCP tool to use (e.g. "get_ksh_stadat", "mnb_current_rates"). Empty = dbnomics_series.
-
-    Returns:
-        JSON confirmation with the saved recipe.
-    """
-    recipe_id = id.strip()
-    if not recipe_id or not provider.strip() or not dataset.strip():
-        return json.dumps({"error": "id, provider, and dataset are required"})
-
-    # Parse dimensions
-    dims = {}
-    if dimensions:
-        try:
-            dims = json.loads(dimensions)
-        except json.JSONDecodeError:
-            return json.dumps({"error": f"Invalid JSON in dimensions: {dimensions}"})
-
-    # Parse keywords
-    kw_list = [k.strip().lower() for k in keywords.split(",") if k.strip()] if keywords else []
-    # Auto-add provider and dataset as keywords
-    for auto_kw in [provider.lower(), dataset.lower()]:
-        if auto_kw not in kw_list:
-            kw_list.append(auto_kw)
-
-    # Check for duplicate signature
-    existing = _find_recipe_by_signature(provider, dataset, dims)
-    if existing:
-        # Merge keywords
-        merged = list(existing.get("keywords", []))
-        added = 0
-        for kw in kw_list:
-            if kw not in merged:
-                merged.append(kw)
-                added += 1
-        existing["keywords"] = merged
-        if note and note != existing.get("note", ""):
-            existing["note"] = note
-        _save_recipes()
-        return json.dumps({
-            "action": "merged_keywords",
-            "id": existing["id"],
-            "keywords_added": added,
-            "total_keywords": len(merged),
-            "recipe": existing,
-        }, ensure_ascii=False, indent=2)
-
-    # Check for duplicate ID
-    if any(r["id"] == recipe_id for r in _recipes_db):
-        return json.dumps({"error": f"Recipe ID '{recipe_id}' already exists. Choose a different ID."})
-
-    recipe = {
-        "id": recipe_id,
-        "keywords": kw_list,
-        "provider": provider.strip(),
-        "dataset": dataset.strip(),
-        "note": note.strip(),
-        "call_count": 0,
-        "last_used": None,
-        "source": "manual",
-    }
-    if dims:
-        recipe["dimensions"] = dims
-    if series_code:
-        recipe["series_code"] = series_code.strip()
-    if tool:
-        recipe["tool"] = tool.strip()
-
-    _recipes_db.append(recipe)
-    _save_recipes()
-    logger.info(f"Manually added recipe: {recipe_id}")
-
-    return json.dumps({
-        "action": "added",
-        "total_recipes": len(_recipes_db),
-        "recipe": recipe,
     }, ensure_ascii=False, indent=2)
 
 
@@ -2677,30 +2684,11 @@ _OECD_COUNTRY_MAP = {
 }
 
 
-@mcp.tool()
-async def get_oecd_cli(
-    country: str = "HUN",
-    periods: int = 12,
-) -> str:
-    """Get the OECD Composite Leading Indicator (CLI) for a country.
+async def _get_oecd_cli_data(country: str, periods: int = 12) -> str:
+    """Internal helper: fetch OECD Composite Leading Indicator (CLI) for a country.
 
     The CLI predicts turning points in business cycles 6-9 months ahead.
     Values above 100 = expansion, below 100 = contraction.
-
-    Args:
-        country: Country code — 2-letter (HU, DE, US) or 3-letter (HUN, DEU, USA).
-                 Available: DE, FR, IT, ES, NL, BE, AT, PL, CZ, HU, SE, DK, FI, PT, GR, IE,
-                 US, GB, JP, CN, CA, AU, KR, MX, BR, IN, RU, ZA, TR, CH, NO
-        periods: Number of monthly observations (default: 12)
-
-    Returns:
-        JSON with CLI value, trend direction, momentum (expansion/contraction), and history.
-
-    Interpretation:
-        CLI > 100 + trending up → strong expansion ahead
-        CLI > 100 + trending down → expansion peaking, slowdown coming
-        CLI < 100 + trending down → contraction deepening
-        CLI < 100 + trending up → contraction bottoming, recovery coming
     """
     # Normalize country code
     code = country.strip().upper()
@@ -2945,34 +2933,54 @@ async def forecast(
     year: int = 2026,
     quarter: int = 0,
 ) -> str:
-    """Get macroeconomic forecasts — GDP growth, inflation, unemployment.
+    """Get macroeconomic forecasts or the OECD Composite Leading Indicator.
 
     Ensemble model combining SAJÁT (Phillips Curve + Okun's Law), IMF WEO,
     OECD Composite Leading Indicator, and FRED data. Supports 52 countries,
     annual and quarterly forecasts, with 3 scenarios.
 
+    Also supports indicator="oecd_cli" to directly fetch the OECD CLI
+    (predicts turning points in business cycles 6-9 months ahead).
+
     NOTE FOR AI ASSISTANTS: If the forecast seems off or you find better data,
-    please use report_issue(tool="forecast", description="...") to help improve it.
+    please use recipe_book(action="report", tool_name="forecast", description="...").
 
     Args:
         country: ISO 2-letter country code (e.g. "HU", "DE", "US", "PL", "FR")
                  Supported: V4 (HU,PL,CZ,SK), DACH (DE,AT,CH), Western EU (FR,IT,ES,NL,BE,PT,IE),
                  Nordics (SE,DK,FI,NO), Balkans (RO,BG,HR,SI), Baltics (EE,LV,LT),
                  Global (US,GB,JP,CN,CA,AU,KR,IN,BR,MX,TR,ZA)
-        indicator: "gdp" (growth %), "inflation" (CPI %), or "unemployment" (rate %).
-        year: Target year for forecast (default: 2026)
+        indicator: "gdp" (growth %), "inflation" (CPI %), "unemployment" (rate %),
+                   or "oecd_cli" (OECD Composite Leading Indicator, 100=neutral).
+        year: Target year for forecast (default: 2026). Ignored for oecd_cli.
         quarter: Quarter 1-4 for quarterly forecast, 0 for annual (default: 0).
                  Quarterly forecasts are our EXCLUSIVE capability — most sources only have annual!
+                 For oecd_cli, used as number of monthly observations (default: 12 if 0).
 
     Returns:
-        JSON with ensemble forecast, individual source values, weights, confidence,
-        3 scenarios (pessimistic/realistic/optimistic), and recession probability.
+        GDP/inflation/unemployment: JSON with ensemble forecast, individual source values,
+        weights, confidence, 3 scenarios, and recession probability.
+        oecd_cli: JSON with CLI value, trend direction, momentum (expansion/contraction), and history.
 
     Examples:
-        forecast("HU", "gdp", 2026) → Hungary GDP growth forecast for 2026
-        forecast("DE", "inflation", 2026, 2) → Germany Q2 2026 inflation forecast
-        forecast("US", "unemployment", 2026) → US unemployment rate forecast
+        forecast("HU", "gdp", 2026) -> Hungary GDP growth forecast for 2026
+        forecast("DE", "inflation", 2026, 2) -> Germany Q2 2026 inflation forecast
+        forecast("US", "unemployment", 2026) -> US unemployment rate forecast
+        forecast("HU", "oecd_cli") -> Hungary OECD CLI (business cycle indicator)
+
+    OECD CLI interpretation:
+        CLI > 100 + trending up -> strong expansion ahead
+        CLI > 100 + trending down -> expansion peaking, slowdown coming
+        CLI < 100 + trending down -> contraction deepening
+        CLI < 100 + trending up -> contraction bottoming, recovery coming
     """
+    indicator = indicator.lower().strip()
+
+    # --- OECD CLI MODE ---
+    if indicator == "oecd_cli":
+        periods = quarter if quarter and quarter > 0 else 12
+        return await _get_oecd_cli_data(country, periods)
+
     uf = _get_forecaster()
     if uf is None:
         return json.dumps({
@@ -2981,11 +2989,10 @@ async def forecast(
             "hint": "Check server logs for missing dependencies (pandas, numpy, requests)",
         }, indent=2)
 
-    indicator = indicator.lower().strip()
     if indicator not in ("gdp", "inflation", "unemployment"):
         return json.dumps({
             "error": f"Unknown indicator: '{indicator}'",
-            "hint": "Use 'gdp', 'inflation', or 'unemployment'",
+            "hint": "Use 'gdp', 'inflation', 'unemployment', or 'oecd_cli'",
         })
 
     country = country.strip().upper()
@@ -3492,25 +3499,18 @@ LANDING_HTML = """<!DOCTYPE html>
   <table>
     <tr><th>Eszköz</th><th>Leírás</th></tr>
     <tr><td>search_datasets</td><td>Keresés Eurostat, KSH és DBnomics közt — szinonimákkal (ország + téma)</td></tr>
-    <tr><td>get_recipe</td><td>Öntanuló receptkönyv — kész lekérési sablonok, automatikusan bővül</td></tr>
-    <tr><td>add_recipe</td><td>Recept hozzáadása a receptkönyvhöz (bárki hívhatja)</td></tr>
     <tr><td>get_eurostat_data</td><td>Eurostat adatlekérés (GDP, infláció, munkanélküliség…)</td></tr>
-    <tr><td>get_ksh_stadat</td><td>KSH STADAT táblák — magyar idősorok (árak, bérek, GDP…)</td></tr>
-    <tr><td>get_ksh_data</td><td>KSH High-Value Datasets letöltése</td></tr>
-    <tr><td>get_fred_data</td><td>FRED — 800K+ US gazdasági idősor (kamatok, infláció, GDP, munkaerő…)</td></tr>
-    <tr><td>dbnomics_search</td><td>Keresés 700M+ adatsor közt (IMF, ECB, OECD…)</td></tr>
+    <tr><td>dbnomics_search</td><td>Keresés 700M+ adatsor közt + adatszolgáltatók listája (mode="providers")</td></tr>
     <tr><td>dbnomics_series</td><td>Idősor lekérése DBnomics-ból — sikeres lekérések receptté válnak</td></tr>
-    <tr><td>dbnomics_providers</td><td>DBnomics adatszolgáltatók listája</td></tr>
-    <tr><td>get_oecd_cli</td><td>OECD Composite Leading Indicator — konjunktúra-előrejelzés 30+ országra</td></tr>
-    <tr><td>forecast</td><td>Makrogazdasági prognózis — GDP, infláció, munkanélküliség (52 ország, negyedéves)</td></tr>
-    <tr><td>yfinance_quote</td><td>Aktuális árfolyam (részvény, deviza, áru, index, BUX)</td></tr>
-    <tr><td>yfinance_history</td><td>Historikus árfolyamadatok (napi/heti/havi OHLCV)</td></tr>
-    <tr><td>mnb_current_rates</td><td>Hivatalos MNB árfolyamok (HUF, 32 deviza)</td></tr>
-    <tr><td>mnb_historical_rates</td><td>MNB historikus árfolyamok (1949-től)</td></tr>
-    <tr><td>get_economic_calendar</td><td>Gazdasági naptár — közelgő adatközlések (FRED, ECB, Eurostat)</td></tr>
+    <tr><td>get_ksh_stadat</td><td>KSH STADAT táblák — magyar idősorok (árak, bérek, GDP…)</td></tr>
+    <tr><td>get_ksh_hvd</td><td>KSH High-Value Datasets — listázás/keresés vagy letöltés</td></tr>
+    <tr><td>yfinance</td><td>Yahoo Finance — aktuális árfolyam (action="quote") vagy historikus adatok (action="history")</td></tr>
+    <tr><td>mnb_rates</td><td>MNB árfolyamok — aktuális (mode="current") vagy historikus (mode="historical", 1949-től)</td></tr>
     <tr><td>calculate</td><td>Gazdasági kalkulátor (infláció, CAGR, reálérték, konverzió)</td></tr>
-    <tr><td>get_usage_stats</td><td>Használati statisztikák — ki, mit, mennyiszer</td></tr>
-    <tr><td>report_issue</td><td>Hibajelentés — AI asszisztensek jelezhetik a problémákat</td></tr>
+    <tr><td>recipe_book</td><td>Receptkönyv — keresés, hozzáadás, hibajelentés, statisztikák (action paraméter)</td></tr>
+    <tr><td>forecast</td><td>Prognózis — GDP, infláció, munkanélküliség, OECD CLI (52 ország, negyedéves)</td></tr>
+    <tr><td>get_fred_data</td><td>FRED — 800K+ US gazdasági idősor (kamatok, infláció, GDP, munkaerő…)</td></tr>
+    <tr><td>get_economic_calendar</td><td>Gazdasági naptár — közelgő adatközlések (FRED, ECB, Eurostat)</td></tr>
   </table>
 </div>
 
