@@ -1037,11 +1037,38 @@ KSH_STADAT_CATALOG = {
     "nep0007": "Születéskor várható átlagos élettartam",
     "nep0011": "Belföldi és nemzetközi vándorlás",
     "nep0015": "Népesség vármegyénként (január 1.)",
-    # --- Government finance: NO CSV available in STADAT! ---
-    # Use Eurostat gov_10dd_ggd or dbnomics for government debt/deficit data.
+    # --- Government finance: NO STADAT CSV exists! Use Eurostat gov_10dd_ggd ---
+    # --- Investment (ber — NOT wages!) ---
+    "ber0001": "A nemzetgazdasági beruházások hosszú idősoros adatai",
+    # --- Health (ege) ---
+    "ege0001": "Az egészségügyi ellátás főbb adatai",
+    # --- Living standards (ele) ---
+    "ele0001": "A szegénységgel vagy társadalmi kirekesztődéssel kapcsolatos mutatók",
+    # --- Economic organizations (gsz) ---
+    "gsz0001": "A gazdasági szervezetek összefoglaló adatai",
+    # --- Income (jov) ---
+    "jov0001": "Az összes háztartás jövedelmének és fogyasztásának főbb adatai",
     # --- Environment (kor) ---
     "kor0001": "Környezet, kommunális ellátás főbb adatai",
-    # --- Tourism (tur — verified 2026-03-21) ---
+    # --- Housing (lak) ---
+    "lak0001": "A lakások összefoglaló adatai",
+    # --- Agriculture (mez) ---
+    "mez0001": "A mezőgazdaság összefoglaló adatai",
+    # --- Education (okt) ---
+    "okt0001": "Az oktatás főbb, hosszú idősoros adatai",
+    # --- Transport (sza) ---
+    "sza0001": "Összefoglaló adatok az áruszállításról és a személyszállításról",
+    # --- Social services (szo) ---
+    "szo0001": "A szociális ellátás összefoglaló adatai",
+    # --- R&D, innovation (tte) ---
+    "tte0001": "A kutatás-fejlesztés és az innováció főbb arányai",
+    # --- ICT (ikt) ---
+    "ikt0001": "Az információ, kommunikáció főbb mutatói",
+    # --- Culture, sport (ksp) ---
+    "ksp0001": "A kultúra összefoglaló adatai",
+    # --- Justice (iga) ---
+    "iga0001": "Az igazságszolgáltatás összefoglaló adatai",
+    # --- Tourism (tur) ---
     "tur0001": "A turizmus és vendéglátás fontosabb adatai",
     "tur0030": "Az utazásszervező és -közvetítő vállalkozások száma és teljesítménye",
     "tur0031": "Turizmus Szatellit Számlák (TSzSz)",
