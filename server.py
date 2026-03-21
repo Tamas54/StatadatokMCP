@@ -1026,6 +1026,17 @@ async def dbnomics_series(
 
             results.append(series_entry)
 
+        # --- Auto-learn: save successful queries as recipes ---
+        if num_found > 0 and (dimensions or series_code):
+            try:
+                dim_dict = {}
+                if dimensions:
+                    dim_dict = json.loads(dimensions) if isinstance(dimensions, str) else dimensions
+                first_name = results[0].get("series_name", "") if results else ""
+                _auto_learn_recipe(provider_code, dataset_code, dim_dict, first_name, num_found)
+            except Exception:
+                pass  # auto-learn is best-effort
+
         return json.dumps({
             "provider": provider_code,
             "dataset": dataset_code,
@@ -1998,176 +2009,136 @@ def mnb_historical_rates(
 
 
 # ---------------------------------------------------------------------------
-# Recipe lookup — pre-built query templates for common macroeconomic data
+# Self-learning recipe book — persistent JSON storage
 # ---------------------------------------------------------------------------
 
-_RECIPES: list[dict] = [
+_RECIPES_DIR = os.environ.get("RECIPES_DIR", os.path.dirname(os.path.abspath(__file__)))
+_RECIPES_PATH = os.path.join(_RECIPES_DIR, "recipes.json")
+
+# In-memory recipe list (loaded from JSON on startup)
+_recipes_db: list[dict] = []
+
+# Seed recipes — migrated to JSON on first run, then JSON is the source of truth
+_SEED_RECIPES: list[dict] = [
     # --- KAMATOK / INTEREST RATES ---
-    {
-        "id": "policy_rate_PL",
-        "keywords": ["kamat", "kamatláb", "policy rate", "alapkamat", "lengyelország", "poland", "pl", "imf"],
-        "provider": "IMF",
-        "dataset": "IFS",
-        "dimensions": {"FREQ": "Q", "REF_AREA": "PL", "INDICATOR": "FPOLM_PA"},
-        "note": "IMF IFS — Poland monetary policy rate (quarterly)",
-    },
-    {
-        "id": "short_rate_HU",
-        "keywords": ["kamat", "rövid", "short rate", "magyarország", "hungary", "hu", "hun", "oecd"],
-        "provider": "OECD",
-        "dataset": "DP_LIVE",
-        "dimensions": {"LOCATION": "HUN", "INDICATOR": "STINT", "FREQUENCY": "Q"},
-        "note": "OECD — Hungary short-term interest rate (quarterly)",
-    },
-    {
-        "id": "short_rate_PL",
-        "keywords": ["kamat", "rövid", "short rate", "lengyelország", "poland", "pl", "pol", "oecd"],
-        "provider": "OECD",
-        "dataset": "DP_LIVE",
-        "dimensions": {"LOCATION": "POL", "INDICATOR": "STINT", "FREQUENCY": "Q"},
-        "note": "OECD — Poland short-term interest rate (quarterly)",
-    },
-    {
-        "id": "short_rate_EA",
-        "keywords": ["kamat", "rövid", "short rate", "eurozóna", "eurozone", "ea", "ea19", "oecd"],
-        "provider": "OECD",
-        "dataset": "DP_LIVE",
-        "dimensions": {"LOCATION": "EA19", "INDICATOR": "STINT", "FREQUENCY": "Q"},
-        "note": "OECD — Euro area short-term interest rate (quarterly)",
-    },
-    {
-        "id": "ecb_main_refi",
-        "keywords": ["kamat", "ecb", "refi", "refinancing", "irányadó", "main", "európai központi bank"],
-        "provider": "ECB",
-        "dataset": "FM",
-        "series_code": "B.U2.EUR.4F.KR.MRR_FR.LEV",
-        "note": "ECB main refinancing rate (daily)",
-    },
+    {"id": "policy_rate_PL", "keywords": ["kamat", "kamatláb", "policy rate", "alapkamat", "lengyelország", "poland", "pl", "imf"], "provider": "IMF", "dataset": "IFS", "dimensions": {"FREQ": "Q", "REF_AREA": "PL", "INDICATOR": "FPOLM_PA"}, "note": "IMF IFS — Poland monetary policy rate (quarterly)"},
+    {"id": "short_rate_HU", "keywords": ["kamat", "rövid", "short rate", "magyarország", "hungary", "hu", "hun", "oecd"], "provider": "OECD", "dataset": "DP_LIVE", "dimensions": {"LOCATION": "HUN", "INDICATOR": "STINT", "FREQUENCY": "Q"}, "note": "OECD — Hungary short-term interest rate (quarterly)"},
+    {"id": "short_rate_PL", "keywords": ["kamat", "rövid", "short rate", "lengyelország", "poland", "pl", "pol", "oecd"], "provider": "OECD", "dataset": "DP_LIVE", "dimensions": {"LOCATION": "POL", "INDICATOR": "STINT", "FREQUENCY": "Q"}, "note": "OECD — Poland short-term interest rate (quarterly)"},
+    {"id": "short_rate_EA", "keywords": ["kamat", "rövid", "short rate", "eurozóna", "eurozone", "ea", "ea19", "oecd"], "provider": "OECD", "dataset": "DP_LIVE", "dimensions": {"LOCATION": "EA19", "INDICATOR": "STINT", "FREQUENCY": "Q"}, "note": "OECD — Euro area short-term interest rate (quarterly)"},
+    {"id": "ecb_main_refi", "keywords": ["kamat", "ecb", "refi", "refinancing", "irányadó", "main", "európai központi bank"], "provider": "ECB", "dataset": "FM", "series_code": "B.U2.EUR.4F.KR.MRR_FR.LEV", "note": "ECB main refinancing rate (daily)"},
     # --- BÉREK / WAGES ---
-    {
-        "id": "wages_SI_gross",
-        "keywords": ["bér", "bruttó", "wages", "gross", "szlovénia", "slovenia", "si", "eurostat"],
-        "provider": "Eurostat",
-        "dataset": "earn_nt_net",
-        "dimensions": {"geo": "SI", "currency": "EUR", "estruct": "GRS_P1_NCH_AW100"},
-        "note": "Eurostat — Slovenia gross wages (EUR, single earner 100% avg wage)",
-    },
-    {
-        "id": "wages_EE_gross",
-        "keywords": ["bér", "bruttó", "wages", "gross", "észtország", "estonia", "ee", "eurostat"],
-        "provider": "Eurostat",
-        "dataset": "earn_nt_net",
-        "dimensions": {"geo": "EE", "currency": "EUR", "estruct": "GRS_P1_NCH_AW100"},
-        "note": "Eurostat — Estonia gross wages (EUR, single earner 100% avg wage)",
-    },
-    {
-        "id": "wages_SI_net",
-        "keywords": ["bér", "nettó", "wages", "net", "szlovénia", "slovenia", "si", "eurostat"],
-        "provider": "Eurostat",
-        "dataset": "earn_nt_net",
-        "dimensions": {"geo": "SI", "currency": "EUR", "estruct": "NET_P1_NCH_AW100"},
-        "note": "Eurostat — Slovenia net wages (EUR, single earner 100% avg wage)",
-    },
-    {
-        "id": "wages_EE_net",
-        "keywords": ["bér", "nettó", "wages", "net", "észtország", "estonia", "ee", "eurostat"],
-        "provider": "Eurostat",
-        "dataset": "earn_nt_net",
-        "dimensions": {"geo": "EE", "currency": "EUR", "estruct": "NET_P1_NCH_AW100"},
-        "note": "Eurostat — Estonia net wages (EUR, single earner 100% avg wage)",
-    },
-    {
-        "id": "wages_pps_SI",
-        "keywords": ["bér", "vásárlóerő", "pps", "wages", "purchasing power", "szlovénia", "slovenia", "si"],
-        "provider": "Eurostat",
-        "dataset": "earn_nt_netft",
-        "dimensions": {"geo": "SI", "estruct": "VAL_A_PPS"},
-        "note": "Eurostat — Slovenia wages in PPS (purchasing power standard)",
-    },
-    {
-        "id": "wages_pps_EE",
-        "keywords": ["bér", "vásárlóerő", "pps", "wages", "purchasing power", "észtország", "estonia", "ee"],
-        "provider": "Eurostat",
-        "dataset": "earn_nt_netft",
-        "dimensions": {"geo": "EE", "estruct": "VAL_A_PPS"},
-        "note": "Eurostat — Estonia wages in PPS (purchasing power standard)",
-    },
-    {
-        "id": "wages_HU_sector",
-        "keywords": ["bér", "ágazat", "szektor", "wages", "sector", "magyarország", "hungary", "ksh"],
-        "provider": "KSH",
-        "dataset": "mun0183",
-        "tool": "get_ksh_stadat",
-        "note": "KSH STADAT mun0183 — Hungary wages by economic sector (monthly)",
-    },
-    {
-        "id": "wages_HU_monthly",
-        "keywords": ["bér", "havi", "wages", "monthly", "magyarország", "hungary", "ksh"],
-        "provider": "KSH",
-        "dataset": "mun0143",
-        "tool": "get_ksh_stadat",
-        "note": "KSH STADAT mun0143 — Hungary monthly wages (institutional data)",
-    },
+    {"id": "wages_SI_gross", "keywords": ["bér", "bruttó", "wages", "gross", "szlovénia", "slovenia", "si", "eurostat"], "provider": "Eurostat", "dataset": "earn_nt_net", "dimensions": {"geo": "SI", "currency": "EUR", "estruct": "GRS_P1_NCH_AW100"}, "note": "Eurostat — Slovenia gross wages (EUR, single earner 100% avg wage)"},
+    {"id": "wages_EE_gross", "keywords": ["bér", "bruttó", "wages", "gross", "észtország", "estonia", "ee", "eurostat"], "provider": "Eurostat", "dataset": "earn_nt_net", "dimensions": {"geo": "EE", "currency": "EUR", "estruct": "GRS_P1_NCH_AW100"}, "note": "Eurostat — Estonia gross wages (EUR, single earner 100% avg wage)"},
+    {"id": "wages_SI_net", "keywords": ["bér", "nettó", "wages", "net", "szlovénia", "slovenia", "si", "eurostat"], "provider": "Eurostat", "dataset": "earn_nt_net", "dimensions": {"geo": "SI", "currency": "EUR", "estruct": "NET_P1_NCH_AW100"}, "note": "Eurostat — Slovenia net wages (EUR, single earner 100% avg wage)"},
+    {"id": "wages_EE_net", "keywords": ["bér", "nettó", "wages", "net", "észtország", "estonia", "ee", "eurostat"], "provider": "Eurostat", "dataset": "earn_nt_net", "dimensions": {"geo": "EE", "currency": "EUR", "estruct": "NET_P1_NCH_AW100"}, "note": "Eurostat — Estonia net wages (EUR, single earner 100% avg wage)"},
+    {"id": "wages_pps_SI", "keywords": ["bér", "vásárlóerő", "pps", "wages", "purchasing power", "szlovénia", "slovenia", "si"], "provider": "Eurostat", "dataset": "earn_nt_netft", "dimensions": {"geo": "SI", "estruct": "VAL_A_PPS"}, "note": "Eurostat — Slovenia wages in PPS (purchasing power standard)"},
+    {"id": "wages_pps_EE", "keywords": ["bér", "vásárlóerő", "pps", "wages", "purchasing power", "észtország", "estonia", "ee"], "provider": "Eurostat", "dataset": "earn_nt_netft", "dimensions": {"geo": "EE", "estruct": "VAL_A_PPS"}, "note": "Eurostat — Estonia wages in PPS (purchasing power standard)"},
+    {"id": "wages_HU_sector", "keywords": ["bér", "ágazat", "szektor", "wages", "sector", "magyarország", "hungary", "ksh"], "provider": "KSH", "dataset": "mun0183", "tool": "get_ksh_stadat", "note": "KSH STADAT mun0183 — Hungary wages by economic sector (monthly)"},
+    {"id": "wages_HU_monthly", "keywords": ["bér", "havi", "wages", "monthly", "magyarország", "hungary", "ksh"], "provider": "KSH", "dataset": "mun0143", "tool": "get_ksh_stadat", "note": "KSH STADAT mun0143 — Hungary monthly wages (institutional data)"},
     # --- INFLÁCIÓ / INFLATION ---
-    {
-        "id": "cpi_HU",
-        "keywords": ["infláció", "fogyasztói", "árindex", "cpi", "inflation", "magyarország", "hungary", "ksh"],
-        "provider": "KSH",
-        "dataset": "ara0001",
-        "tool": "get_ksh_stadat",
-        "note": "KSH STADAT ara0001 — Hungary consumer price index (annual)",
-    },
-    {
-        "id": "hicp_EA_index",
-        "keywords": ["hicp", "infláció", "inflation", "eurozóna", "eurozone", "ea", "index", "eurostat"],
-        "provider": "Eurostat",
-        "dataset": "prc_hicp_aind",
-        "dimensions": {"geo": "EA", "coicop": "CP00", "unit": "INX_A_AVG"},
-        "note": "Eurostat — Euro area HICP annual average index (2015=100)",
-    },
-    {
-        "id": "hicp_annual_rate",
-        "keywords": ["hicp", "infláció", "inflation", "éves", "annual", "rate", "eurostat"],
-        "provider": "Eurostat",
-        "dataset": "prc_hicp_manr",
-        "dimensions": {"coicop": "CP00"},
-        "note": "Eurostat — HICP annual rate of change (monthly, geo parameterizable)",
-    },
+    {"id": "cpi_HU", "keywords": ["infláció", "fogyasztói", "árindex", "cpi", "inflation", "magyarország", "hungary", "ksh"], "provider": "KSH", "dataset": "ara0001", "tool": "get_ksh_stadat", "note": "KSH STADAT ara0001 — Hungary consumer price index (annual)"},
+    {"id": "hicp_EA_index", "keywords": ["hicp", "infláció", "inflation", "eurozóna", "eurozone", "ea", "index", "eurostat"], "provider": "Eurostat", "dataset": "prc_hicp_aind", "dimensions": {"geo": "EA", "coicop": "CP00", "unit": "INX_A_AVG"}, "note": "Eurostat — Euro area HICP annual average index (2015=100)"},
+    {"id": "hicp_annual_rate", "keywords": ["hicp", "infláció", "inflation", "éves", "annual", "rate", "eurostat"], "provider": "Eurostat", "dataset": "prc_hicp_manr", "dimensions": {"coicop": "CP00"}, "note": "Eurostat — HICP annual rate of change (monthly, geo parameterizable)"},
     # --- ÁRFOLYAM / EXCHANGE RATES ---
-    {
-        "id": "eur_huf_current",
-        "keywords": ["árfolyam", "exchange", "eur", "huf", "forint", "aktuális", "current", "mnb", "mai"],
-        "provider": "MNB",
-        "tool": "mnb_current_rates",
-        "dimensions": {"currencies": "EUR"},
-        "note": "MNB current official EUR/HUF rate — use mnb_current_rates(currencies='EUR')",
-    },
-    {
-        "id": "eur_huf_historical",
-        "keywords": ["árfolyam", "exchange", "eur", "huf", "forint", "historikus", "historical", "mnb", "múlt"],
-        "provider": "MNB",
-        "tool": "mnb_historical_rates",
-        "dimensions": {"currencies": "EUR"},
-        "note": "MNB historical EUR/HUF rates — use mnb_historical_rates(start_date, end_date, currencies='EUR')",
-    },
+    {"id": "eur_huf_current", "keywords": ["árfolyam", "exchange", "eur", "huf", "forint", "aktuális", "current", "mnb", "mai"], "provider": "MNB", "tool": "mnb_current_rates", "dimensions": {"currencies": "EUR"}, "note": "MNB current official EUR/HUF rate — use mnb_current_rates(currencies='EUR')"},
+    {"id": "eur_huf_historical", "keywords": ["árfolyam", "exchange", "eur", "huf", "forint", "historikus", "historical", "mnb", "múlt"], "provider": "MNB", "tool": "mnb_historical_rates", "dimensions": {"currencies": "EUR"}, "note": "MNB historical EUR/HUF rates — use mnb_historical_rates(start_date, end_date, currencies='EUR')"},
     # --- GDP ---
-    {
-        "id": "gdp_HU",
-        "keywords": ["gdp", "magyarország", "hungary", "ksh", "bruttó hazai termék"],
-        "provider": "KSH",
-        "dataset": "gdp0001",
-        "tool": "get_ksh_stadat",
-        "note": "KSH STADAT gdp0001 — Hungary GDP value and volume change",
-    },
-    {
-        "id": "gdp_growth_EU",
-        "keywords": ["gdp", "növekedés", "growth", "eu", "európa", "europe", "eurostat"],
-        "provider": "Eurostat",
-        "dataset": "namq_10_gdp",
-        "dimensions": {"unit": "CLV_PCH_PRE", "s_adj": "SCA", "na_item": "B1GQ"},
-        "note": "Eurostat namq_10_gdp — EU GDP growth rate (quarterly, seasonally adjusted). Alt: tec00115 for annual overview.",
-    },
+    {"id": "gdp_HU", "keywords": ["gdp", "magyarország", "hungary", "ksh", "bruttó hazai termék"], "provider": "KSH", "dataset": "gdp0001", "tool": "get_ksh_stadat", "note": "KSH STADAT gdp0001 — Hungary GDP value and volume change"},
+    {"id": "gdp_growth_EU", "keywords": ["gdp", "növekedés", "growth", "eu", "európa", "europe", "eurostat"], "provider": "Eurostat", "dataset": "namq_10_gdp", "dimensions": {"unit": "CLV_PCH_PRE", "s_adj": "SCA", "na_item": "B1GQ"}, "note": "Eurostat namq_10_gdp — EU GDP growth rate (quarterly, seasonally adjusted). Alt: tec00115 for annual overview."},
 ]
+
+
+def _load_recipes() -> list[dict]:
+    """Load recipes from JSON file, or seed from hardcoded defaults."""
+    global _recipes_db
+    try:
+        if os.path.exists(_RECIPES_PATH):
+            with open(_RECIPES_PATH, "r", encoding="utf-8") as f:
+                _recipes_db = json.load(f)
+            logger.info(f"Loaded {len(_recipes_db)} recipes from {_RECIPES_PATH}")
+        else:
+            # First run — seed from hardcoded recipes
+            _recipes_db = []
+            for r in _SEED_RECIPES:
+                recipe = dict(r)
+                recipe.setdefault("call_count", 0)
+                recipe.setdefault("last_used", None)
+                recipe.setdefault("source", "seed")
+                _recipes_db.append(recipe)
+            _save_recipes()
+            logger.info(f"Seeded {len(_recipes_db)} recipes to {_RECIPES_PATH}")
+    except Exception as e:
+        logger.error(f"Failed to load recipes: {e}")
+        if not _recipes_db:
+            _recipes_db = list(_SEED_RECIPES)
+    return _recipes_db
+
+
+def _save_recipes() -> None:
+    """Persist recipes to JSON file."""
+    try:
+        with open(_RECIPES_PATH, "w", encoding="utf-8") as f:
+            json.dump(_recipes_db, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save recipes: {e}")
+
+
+def _find_recipe_by_signature(provider: str, dataset: str, dimensions: dict) -> Optional[dict]:
+    """Find existing recipe by provider+dataset+dimensions match."""
+    for r in _recipes_db:
+        if (r.get("provider", "").upper() == provider.upper()
+                and r.get("dataset", "").lower() == dataset.lower()
+                and r.get("dimensions", {}) == dimensions):
+            return r
+    return None
+
+
+def _auto_learn_recipe(provider_code: str, dataset_code: str, dimensions: dict,
+                       series_name: str = "", num_found: int = 0) -> None:
+    """Auto-learn a recipe from a successful dbnomics_series call."""
+    if num_found <= 0:
+        return
+
+    existing = _find_recipe_by_signature(provider_code, dataset_code, dimensions)
+    if existing:
+        return  # Already known
+
+    # Generate an ID from dimensions
+    dim_parts = [f"{v}" for v in dimensions.values()] if dimensions else []
+    auto_id = f"auto_{provider_code}_{dataset_code}_{'_'.join(dim_parts)}".replace("/", "_")
+    # Avoid duplicate IDs
+    if any(r["id"] == auto_id for r in _recipes_db):
+        return
+
+    # Generate keywords from dimensions + provider + series name
+    keywords = [provider_code.lower(), dataset_code.lower()]
+    for k, v in dimensions.items():
+        if isinstance(v, str):
+            keywords.append(v.lower())
+        elif isinstance(v, list):
+            keywords.extend(x.lower() for x in v)
+    if series_name:
+        keywords.extend(w.lower() for w in series_name.split() if len(w) > 2)
+    keywords = list(dict.fromkeys(keywords))  # dedupe, preserve order
+
+    recipe = {
+        "id": auto_id,
+        "keywords": keywords,
+        "provider": provider_code,
+        "dataset": dataset_code,
+        "dimensions": dimensions,
+        "note": f"Auto-learned from dbnomics_series ({series_name[:100]})" if series_name else "Auto-learned from dbnomics_series",
+        "call_count": 0,
+        "last_used": None,
+        "source": "auto",
+    }
+    _recipes_db.append(recipe)
+    _save_recipes()
+    logger.info(f"Auto-learned recipe: {auto_id}")
+
+
+# Load recipes on startup
+_load_recipes()
 
 
 @mcp.tool()
@@ -2175,30 +2146,30 @@ def get_recipe(topic: str) -> str:
     """Look up pre-built query recipes for common macroeconomic data requests.
 
     Returns the correct provider, dataset, dimensions, and series codes so you
-    don't have to guess or search. Supports keyword matching in Hungarian and English.
+    don't have to guess or search. The recipe book grows automatically as users
+    discover new data sources via dbnomics_series. Supports HU/EN keyword matching.
 
     Args:
         topic: Search query, e.g. "kamat lengyelország", "wages slovenia",
                "hicp inflation", "gdp hungary", "eur huf", "cpi magyarország"
 
     Returns:
-        JSON with matching recipes (provider, dataset, dimensions, tool, note).
+        JSON with matching recipes (provider, dataset, dimensions, tool, note, stats).
         If no match: error + hint to use search_datasets or dbnomics_search.
     """
+    from datetime import date as date_cls
     query_words = topic.lower().split()
     if not query_words:
         return json.dumps({"error": "empty query", "hint": "provide a topic like 'wages slovenia' or 'kamat lengyelország'"})
 
     scored: list[tuple[int, dict]] = []
-    for recipe in _RECIPES:
+    for recipe in _recipes_db:
         score = 0
         for qw in query_words:
-            # Match against keywords
-            for kw in recipe["keywords"]:
+            for kw in recipe.get("keywords", []):
                 if qw in kw or kw in qw:
                     score += 1
                     break
-            # Also match against id and note
             if qw in recipe["id"].lower():
                 score += 1
             if qw in recipe.get("note", "").lower():
@@ -2212,31 +2183,136 @@ def get_recipe(topic: str) -> str:
         return json.dumps({
             "error": "no recipe found",
             "query": topic,
-            "hint": "use search_datasets or dbnomics_search to find the right dataset",
-            "available_topics": sorted(set(r["id"] for r in _RECIPES)),
+            "hint": "use search_datasets or dbnomics_search to find the right dataset. "
+                    "Successful dbnomics_series calls auto-save as new recipes!",
+            "total_recipes": len(_recipes_db),
+            "available_topics": sorted(set(r["id"] for r in _recipes_db))[:30],
         }, ensure_ascii=False, indent=2)
 
-    # Return top matches (up to 5)
+    # Update usage stats for top match
+    top_recipe = scored[0][1]
+    top_recipe["call_count"] = top_recipe.get("call_count", 0) + 1
+    top_recipe["last_used"] = date_cls.today().isoformat()
+    _save_recipes()
+
     results = []
     for score, recipe in scored[:5]:
         entry = {"id": recipe["id"], "relevance": score}
-        if "provider" in recipe:
-            entry["provider"] = recipe["provider"]
-        if "dataset" in recipe:
-            entry["dataset"] = recipe["dataset"]
-        if "dimensions" in recipe:
-            entry["dimensions"] = recipe["dimensions"]
-        if "series_code" in recipe:
-            entry["series_code"] = recipe["series_code"]
-        if "tool" in recipe:
-            entry["tool"] = recipe["tool"]
+        for field in ("provider", "dataset", "dimensions", "series_code", "tool"):
+            if field in recipe:
+                entry[field] = recipe[field]
         entry["note"] = recipe.get("note", "")
+        entry["call_count"] = recipe.get("call_count", 0)
+        entry["source"] = recipe.get("source", "seed")
         results.append(entry)
 
     return json.dumps({
         "query": topic,
         "matches": len(results),
+        "total_recipes": len(_recipes_db),
         "recipes": results,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def add_recipe(
+    id: str,
+    provider: str,
+    dataset: str,
+    note: str,
+    keywords: str = "",
+    dimensions: str = "",
+    series_code: str = "",
+    tool: str = "",
+) -> str:
+    """Add a new recipe to the self-learning recipe book.
+
+    Recipes are persistent — they survive server restarts. If the same
+    provider+dataset+dimensions combo already exists, keywords are merged.
+
+    Args:
+        id: Unique recipe ID (e.g. "short_rate_CZ", "hicp_DE")
+        provider: Data provider (e.g. "OECD", "Eurostat", "IMF", "ECB", "KSH")
+        dataset: Dataset code (e.g. "DP_LIVE", "prc_hicp_manr", "IFS")
+        note: Human-readable description of what this recipe returns
+        keywords: Comma-separated search keywords (e.g. "czech,cseh,kamat,rate,CZE,interest")
+        dimensions: JSON string of dimension filters (e.g. '{"LOCATION":"CZE","INDICATOR":"STINT"}')
+        series_code: Specific series code if applicable (e.g. "B.U2.EUR.4F.KR.MRR_FR.LEV")
+        tool: MCP tool to use (e.g. "get_ksh_stadat", "mnb_current_rates"). Empty = dbnomics_series.
+
+    Returns:
+        JSON confirmation with the saved recipe.
+    """
+    recipe_id = id.strip()
+    if not recipe_id or not provider.strip() or not dataset.strip():
+        return json.dumps({"error": "id, provider, and dataset are required"})
+
+    # Parse dimensions
+    dims = {}
+    if dimensions:
+        try:
+            dims = json.loads(dimensions)
+        except json.JSONDecodeError:
+            return json.dumps({"error": f"Invalid JSON in dimensions: {dimensions}"})
+
+    # Parse keywords
+    kw_list = [k.strip().lower() for k in keywords.split(",") if k.strip()] if keywords else []
+    # Auto-add provider and dataset as keywords
+    for auto_kw in [provider.lower(), dataset.lower()]:
+        if auto_kw not in kw_list:
+            kw_list.append(auto_kw)
+
+    # Check for duplicate signature
+    existing = _find_recipe_by_signature(provider, dataset, dims)
+    if existing:
+        # Merge keywords
+        merged = list(existing.get("keywords", []))
+        added = 0
+        for kw in kw_list:
+            if kw not in merged:
+                merged.append(kw)
+                added += 1
+        existing["keywords"] = merged
+        if note and note != existing.get("note", ""):
+            existing["note"] = note
+        _save_recipes()
+        return json.dumps({
+            "action": "merged_keywords",
+            "id": existing["id"],
+            "keywords_added": added,
+            "total_keywords": len(merged),
+            "recipe": existing,
+        }, ensure_ascii=False, indent=2)
+
+    # Check for duplicate ID
+    if any(r["id"] == recipe_id for r in _recipes_db):
+        return json.dumps({"error": f"Recipe ID '{recipe_id}' already exists. Choose a different ID."})
+
+    recipe = {
+        "id": recipe_id,
+        "keywords": kw_list,
+        "provider": provider.strip(),
+        "dataset": dataset.strip(),
+        "note": note.strip(),
+        "call_count": 0,
+        "last_used": None,
+        "source": "manual",
+    }
+    if dims:
+        recipe["dimensions"] = dims
+    if series_code:
+        recipe["series_code"] = series_code.strip()
+    if tool:
+        recipe["tool"] = tool.strip()
+
+    _recipes_db.append(recipe)
+    _save_recipes()
+    logger.info(f"Manually added recipe: {recipe_id}")
+
+    return json.dumps({
+        "action": "added",
+        "total_recipes": len(_recipes_db),
+        "recipe": recipe,
     }, ensure_ascii=False, indent=2)
 
 
