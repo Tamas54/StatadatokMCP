@@ -370,6 +370,12 @@ async def search_datasets(
     Returns:
         JSON with matching datasets including codes/IDs and titles.
     """
+    # Auto-trigger KSH scan on first search if DB is stale
+    global _scan_scheduled
+    if _scan_scheduled and not _ksh_scan_running:
+        _scan_scheduled = False
+        asyncio.create_task(_scan_ksh_stadat_background())
+
     # Guard against empty query
     if not query or not query.strip():
         return json.dumps({
@@ -1958,9 +1964,6 @@ else:
     _scan_scheduled = False
     logger.info("KSH STADAT index is fresh — using cached DB")
 
-
-# Wrap search to auto-trigger scan on first use
-_original_search = search_datasets.__wrapped__ if hasattr(search_datasets, '__wrapped__') else None
 
 @mcp.custom_route("/", methods=["GET"])
 async def landing_page(request):
