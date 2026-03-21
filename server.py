@@ -634,6 +634,22 @@ async def get_eurostat_data(
         parsed["dataset"] = dataset_code
         parsed["url"] = req_url
 
+        # Auto-learn: save Eurostat queries with geo/filters as recipes
+        if geo or filters:
+            try:
+                dims = {}
+                if geo:
+                    dims["geo"] = geo
+                if filters:
+                    for pair in filters.split("&"):
+                        if "=" in pair:
+                            k, v = pair.split("=", 1)
+                            dims[k] = v
+                title = parsed.get("label", dataset_code)
+                _auto_learn_recipe("Eurostat", dataset_code, dims, title, 1)
+            except Exception:
+                pass
+
         return json.dumps(parsed, ensure_ascii=False, indent=2)
 
     except httpx.HTTPStatusError as e:
@@ -1606,6 +1622,13 @@ async def get_ksh_stadat(
             # CSV title differs from catalog — trust the CSV
             parsed["note"] = f"CSV title: {parsed['title']}"
 
+        # Auto-learn: save KSH STADAT table as recipe
+        try:
+            title = parsed.get("title", catalog_desc or code)
+            _auto_learn_recipe("KSH", code, {}, title, 1)
+        except Exception:
+            pass
+
         return json.dumps(parsed, ensure_ascii=False, indent=2)
 
     except httpx.HTTPStatusError as e:
@@ -2460,6 +2483,14 @@ async def get_fred_data(
                 "value": float(val) if val != "." else None,
             })
 
+        # Auto-learn: save FRED series as recipe
+        if rows:
+            try:
+                title = meta.get("title", series_id)
+                _auto_learn_recipe("FRED", series_id, {}, title, len(rows))
+            except Exception:
+                pass
+
         return json.dumps({
             "source": "FRED (Federal Reserve Economic Data)",
             "series": meta,
@@ -2588,6 +2619,13 @@ async def get_oecd_cli(
         ]
 
         measure_label = "Leading Indicator" if measure_used == "LI" else "Business Confidence Composite"
+
+        # Auto-learn OECD CLI queries
+        try:
+            _auto_learn_recipe("OECD", "CLI", {"country": code_3},
+                               f"OECD CLI — {code_3} composite leading indicator", 1)
+        except Exception:
+            pass
 
         return json.dumps({
             "source": f"OECD Composite Leading Indicator ({measure_label})",
