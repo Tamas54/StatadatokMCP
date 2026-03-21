@@ -2446,30 +2446,39 @@ async def get_oecd_cli(
     code = country.strip().upper()
     code_3 = _OECD_COUNTRY_MAP.get(code, code)
 
-    # OECD SDMX CLI dataflow
+    # OECD SDMX CLI dataflow — try LI (leading indicator) first,
+    # fallback to BCICP (business confidence composite) for countries like Hungary
     dataflow = "OECD.SDD.STES,DSD_STES@DF_CLI"
-    dimension_path = f"{code_3}.M.LI...AA.IX..H"
-    url = f"{_OECD_SDMX_BASE}/{dataflow}/{dimension_path}"
+    url = f"{_OECD_SDMX_BASE}/{dataflow}"
 
     client = await get_client()
+    rows = None
+    measure_used = None
+    for measure in ("LI", "BCICP"):
+        dimension_path = f"{code_3}.M.{measure}...AA.IX..H"
+        try:
+            resp = await client.get(f"{url}/{dimension_path}", params={
+                "lastNObservations": periods,
+                "dimensionAtObservation": "AllDimensions",
+                "format": "csvfilewithlabels",
+            }, timeout=20.0)
+            resp.raise_for_status()
+            reader = csv.DictReader(io.StringIO(resp.text))
+            rows = list(reader)
+            if rows and "OBS_VALUE" in rows[0]:
+                measure_used = measure
+                break
+            rows = None
+        except httpx.HTTPStatusError:
+            continue
+
+    if not rows:
+        return json.dumps({
+            "error": f"No CLI data for country '{code}' ({code_3})",
+            "hint": "CLI is available for ~30 OECD+ countries. Try: HU, DE, US, JP, CN, GB",
+        }, indent=2)
+
     try:
-        resp = await client.get(url, params={
-            "lastNObservations": periods,
-            "dimensionAtObservation": "AllDimensions",
-            "format": "csvfilewithlabels",
-        }, timeout=20.0)
-        resp.raise_for_status()
-
-        # Parse CSV response
-        reader = csv.DictReader(io.StringIO(resp.text))
-        rows = list(reader)
-
-        if not rows or "OBS_VALUE" not in rows[0]:
-            return json.dumps({
-                "error": f"No CLI data for country '{code}' ({code_3})",
-                "hint": "CLI is available for ~30 OECD+ countries. Try: HU, DE, US, JP, CN, GB",
-            }, indent=2)
-
         values = []
         periods_list = []
         for row in rows:
@@ -2502,8 +2511,10 @@ async def get_oecd_cli(
             for p, v in zip(periods_list, values)
         ]
 
+        measure_label = "Leading Indicator" if measure_used == "LI" else "Business Confidence Composite"
+
         return json.dumps({
-            "source": "OECD Composite Leading Indicator",
+            "source": f"OECD Composite Leading Indicator ({measure_label})",
             "country": code_3,
             "latest_value": round(latest, 2),
             "latest_period": periods_list[-1] if periods_list else None,
@@ -2521,13 +2532,6 @@ async def get_oecd_cli(
             "history": history,
         }, ensure_ascii=False, indent=2)
 
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            return json.dumps({
-                "error": f"No CLI data for '{code}' ({code_3})",
-                "hint": "Try: HU, DE, FR, IT, ES, US, GB, JP, CN, CA, AU, KR, BR, MX, TR, IN",
-            }, indent=2)
-        return json.dumps({"error": f"OECD API error: HTTP {e.response.status_code}"}, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)}, indent=2)
 
