@@ -2660,6 +2660,15 @@ _forecaster_error = None
 _sajat_cache_ready = False
 _sajat_cache_error_detail = ""
 
+# Forecast caches (avoid re-fetching every call)
+_imf_cache: dict = {}  # {indicator_code: {iso3: {year: value}}}
+_imf_cache_ts: float = 0.0
+_IMF_CACHE_TTL = 3600  # 1 hour
+
+_li_cache: dict = {}   # leading indicators composite cache
+_li_cache_ts: float = 0.0
+_LI_CACHE_TTL = 600    # 10 minutes
+
 
 def _get_forecaster():
     """Get or create UltimateForecaster singleton (lazy init)."""
@@ -2848,91 +2857,108 @@ async def forecast(
     try:
         iso3 = _ISO3.get(country, country)
         imf_code = _IMF_INDICATORS[indicator]
+        now = time.time()
 
-        # 1. Fetch IMF DataMapper forecast (authoritative anchor)
-        client = await get_client()
-        imf_values = {}
-        try:
-            periods = f"{year-1},{year},{year+1}"
-            imf_resp = await client.get(
-                f"https://www.imf.org/external/datamapper/api/v1/{imf_code}",
-                params={"periods": periods},
-                timeout=15.0,
-            )
-            if imf_resp.status_code == 200:
-                imf_data = imf_resp.json()
-                country_vals = imf_data.get("values", {}).get(imf_code, {}).get(iso3, {})
-                for y_str, val in country_vals.items():
-                    if val is not None:
-                        imf_values[int(y_str)] = float(val)
-        except Exception as e:
-            logger.warning(f"IMF DataMapper fetch failed: {e}")
+        # --- 1. IMF DataMapper forecast (cached 1h) ---
+        global _imf_cache, _imf_cache_ts
+        if now - _imf_cache_ts > _IMF_CACHE_TTL:
+            # Fetch all 3 indicators in one go for all countries
+            client = await get_client()
+            new_cache = {}
+            for ind_name, ind_code in _IMF_INDICATORS.items():
+                try:
+                    resp = await client.get(
+                        f"https://www.imf.org/external/datamapper/api/v1/{ind_code}",
+                        params={"periods": ",".join(str(y) for y in range(year - 1, year + 3))},
+                        timeout=15.0,
+                    )
+                    if resp.status_code == 200:
+                        vals = resp.json().get("values", {}).get(ind_code, {})
+                        new_cache[ind_code] = {
+                            c3: {int(y): float(v) for y, v in yv.items() if v is not None}
+                            for c3, yv in vals.items()
+                        }
+                except Exception as e:
+                    logger.warning(f"IMF fetch {ind_code}: {e}")
+            if new_cache:
+                _imf_cache = new_cache
+                _imf_cache_ts = now
+                logger.info(f"IMF cache refreshed: {sum(len(v) for v in new_cache.values())} country-indicators")
 
-        imf_forecast = imf_values.get(year)
+        imf_country = _imf_cache.get(imf_code, {}).get(iso3, {})
+        imf_forecast = imf_country.get(year)
+        imf_all_years = imf_country if imf_country else None
 
-        # 2. Fetch leading indicators via UltimateForecaster
-        uf.fetch_all_indicators()
+        # --- 2. Leading indicators (cached 10min) ---
+        global _li_cache, _li_cache_ts
+        if now - _li_cache_ts > _LI_CACHE_TTL:
+            uf.fetch_all_indicators()
+            _li_cache_ts = now
+
         composite = uf.calculate_composite_score(country)
-
-        # Leading indicator adjustment: composite_score / 100 → ±0.5pp max
         li_adjustment = 0.0
         if composite.get("confidence", 0) >= 40:
             li_adjustment = round(composite["composite_score"] / 100, 2)
-            # Cap adjustment to ±0.5pp
             li_adjustment = max(-0.5, min(0.5, li_adjustment))
 
-        # 3. Build ensemble forecast
+        # --- 3. Build ensemble ---
         sources = {}
         forecasts_vals = []
         weights = []
 
-        # IMF anchor (weight 50% — most reliable)
         if imf_forecast is not None:
             sources["imf_weo"] = imf_forecast
             forecasts_vals.append(imf_forecast)
             weights.append(0.50)
 
-        # SAJÁT forecaster (weight 30%)
-        sajat_val = None
+        # SAJÁT forecaster (if cache available)
         try:
             sajat_result = uf.get_sajat_forecast(country, indicator, year, quarter=q)
             if sajat_result and sajat_result.get("value") is not None:
-                sajat_val = sajat_result["value"]
-                # Sanity check: reject if wildly divergent from IMF (>5x or negative when IMF positive)
-                if imf_forecast is not None:
-                    if abs(sajat_val) > abs(imf_forecast) * 5 + 5:
-                        logger.warning(f"SAJÁT {country}/{indicator} rejected: {sajat_val} vs IMF {imf_forecast}")
-                        sajat_val = None
-                if sajat_val is not None:
-                    sources["sajat"] = round(sajat_val, 2)
-                    forecasts_vals.append(sajat_val)
+                sv = sajat_result["value"]
+                if imf_forecast is None or abs(sv) <= abs(imf_forecast) * 5 + 5:
+                    sources["sajat"] = round(sv, 2)
+                    forecasts_vals.append(sv)
                     weights.append(0.30)
         except Exception:
             pass
 
-        # FRED current data (weight 20%, non-EU countries)
+        # FRED current (non-EU countries)
         try:
             fred_result = uf.get_ultimate_forecast(country, indicator, year, quarter=q)
-            fred_sources = fred_result.get("sources", {})
-            if f"fred_{indicator}_current" in fred_sources:
-                fred_val = fred_sources[f"fred_{indicator}_current"]
-                sources["fred_current"] = round(fred_val, 2)
-                forecasts_vals.append(fred_val)
+            fk = f"fred_{indicator}_current"
+            if fk in fred_result.get("sources", {}):
+                fv = fred_result["sources"][fk]
+                sources["fred_current"] = round(fv, 2)
+                forecasts_vals.append(fv)
                 weights.append(0.20)
         except Exception:
             pass
 
-        # Calculate weighted ensemble
+        # Weighted average + leading indicator adjustment
+        import numpy as np
         ultimate = None
         confidence = 30
         if forecasts_vals:
-            import numpy as np
             w = np.array(weights)
             w = w / w.sum()
             ultimate = round(float(np.average(forecasts_vals, weights=w)) + li_adjustment, 2)
             confidence = min(90, 30 + len(forecasts_vals) * 20 + composite.get("confidence", 0) * 0.2)
 
-        # Scenario spread based on indicator type
+        # --- 4. Quarterly breakdown (from annual IMF anchor) ---
+        quarterly_breakdown = None
+        if ultimate is not None and q is None and indicator == "gdp":
+            # Seasonal GDP pattern: Q1 weak, Q2-Q3 strong, Q4 moderate
+            seasonal = {1: -0.15, 2: 0.10, 3: 0.08, 4: -0.03}
+            quarterly_breakdown = {}
+            for qi in range(1, 5):
+                q_val = round(ultimate + seasonal[qi] + li_adjustment * (0.3 if qi <= 2 else -0.1), 2)
+                quarterly_breakdown[f"Q{qi}"] = q_val
+        elif ultimate is not None and q is not None and indicator == "gdp":
+            # Specific quarter requested — adjust from annual
+            seasonal = {1: -0.15, 2: 0.10, 3: 0.08, 4: -0.03}
+            ultimate = round(ultimate + seasonal.get(q, 0), 2)
+
         spread = {"gdp": 0.8, "inflation": 1.0, "unemployment": 0.5}.get(indicator, 0.8)
 
         result = {
@@ -2945,11 +2971,12 @@ async def forecast(
             "sources": sources,
             "leading_indicator_adjustment": li_adjustment,
             "scenarios": {
-                "pessimistic": round(ultimate - spread, 2) if ultimate else None,
+                "pessimistic": round(ultimate - spread, 2),
                 "realistic": ultimate,
-                "optimistic": round(ultimate + spread, 2) if ultimate else None,
+                "optimistic": round(ultimate + spread, 2),
             } if ultimate else None,
-            "imf_all_years": imf_values if imf_values else None,
+            "quarterly_breakdown": quarterly_breakdown,
+            "imf_all_years": imf_all_years,
             "composite_score": round(composite.get("composite_score", 0), 1),
             "gdp_signal": composite.get("gdp_growth_signal", "unknown"),
             "recession_probability": round(composite.get("recession_probability", 0), 1),
@@ -2959,6 +2986,13 @@ async def forecast(
                 "adjusted by leading indicators (ifo, yield curve, VIX, sentiment)."
             ),
         }
+
+        # Auto-learn: save forecast query as recipe
+        try:
+            _auto_learn_recipe("forecast", indicator, {"country": country, "year": str(year)},
+                               f"forecast {country} {indicator} {year}", 1)
+        except Exception:
+            pass
 
         return json.dumps(result, ensure_ascii=False, indent=2)
 
