@@ -2651,6 +2651,125 @@ async def get_oecd_cli(
 
 
 # ---------------------------------------------------------------------------
+# Forecast — UltimateForecaster ensemble (GDP, inflation, unemployment)
+# ---------------------------------------------------------------------------
+
+# Lazy-loaded singleton
+_forecaster_instance = None
+_forecaster_error = None
+
+
+def _get_forecaster():
+    """Get or create UltimateForecaster singleton (lazy init)."""
+    global _forecaster_instance, _forecaster_error
+    if _forecaster_instance is not None:
+        return _forecaster_instance
+    if _forecaster_error:
+        return None
+    try:
+        from forecaster import UltimateForecaster
+        _forecaster_instance = UltimateForecaster()
+        logger.info("UltimateForecaster initialized")
+        return _forecaster_instance
+    except Exception as e:
+        _forecaster_error = str(e)
+        logger.error(f"Failed to init UltimateForecaster: {e}")
+        return None
+
+
+@mcp.tool()
+def forecast(
+    country: str,
+    indicator: str = "gdp",
+    year: int = 2026,
+    quarter: int = 0,
+) -> str:
+    """Get macroeconomic forecasts — GDP growth, inflation, unemployment.
+
+    Ensemble model combining SAJÁT (Phillips Curve + Okun's Law), IMF WEO,
+    OECD Composite Leading Indicator, and FRED data. Supports 52 countries,
+    annual and quarterly forecasts, with 3 scenarios.
+
+    Args:
+        country: ISO 2-letter country code (e.g. "HU", "DE", "US", "PL", "FR")
+                 Supported: V4 (HU,PL,CZ,SK), DACH (DE,AT,CH), Western EU (FR,IT,ES,NL,BE,PT,IE),
+                 Nordics (SE,DK,FI,NO), Balkans (RO,BG,HR,SI), Baltics (EE,LV,LT),
+                 Global (US,GB,JP,CN,CA,AU,KR,IN,BR,MX,TR,ZA)
+        indicator: "gdp" (growth %), "inflation" (CPI %), or "unemployment" (rate %).
+        year: Target year for forecast (default: 2026)
+        quarter: Quarter 1-4 for quarterly forecast, 0 for annual (default: 0).
+                 Quarterly forecasts are our EXCLUSIVE capability — most sources only have annual!
+
+    Returns:
+        JSON with ensemble forecast, individual source values, weights, confidence,
+        3 scenarios (pessimistic/realistic/optimistic), and recession probability.
+
+    Examples:
+        forecast("HU", "gdp", 2026) → Hungary GDP growth forecast for 2026
+        forecast("DE", "inflation", 2026, 2) → Germany Q2 2026 inflation forecast
+        forecast("US", "unemployment", 2026) → US unemployment rate forecast
+    """
+    uf = _get_forecaster()
+    if uf is None:
+        return json.dumps({
+            "error": "Forecaster not available",
+            "detail": _forecaster_error or "UltimateForecaster failed to initialize",
+            "hint": "Check server logs for missing dependencies (pandas, numpy, requests)",
+        }, indent=2)
+
+    indicator = indicator.lower().strip()
+    if indicator not in ("gdp", "inflation", "unemployment"):
+        return json.dumps({
+            "error": f"Unknown indicator: '{indicator}'",
+            "hint": "Use 'gdp', 'inflation', or 'unemployment'",
+        })
+
+    country = country.strip().upper()
+    q = quarter if quarter and 1 <= quarter <= 4 else None
+
+    try:
+        # Fetch leading indicators first (needed for composite score)
+        uf.fetch_all_indicators()
+
+        result = uf.get_ultimate_forecast(country, indicator, year, quarter=q)
+
+        # Clean up for JSON serialization (numpy types → Python native)
+        def _clean(obj):
+            if isinstance(obj, (float,)):
+                if obj != obj:  # NaN check
+                    return None
+                return round(obj, 2)
+            if hasattr(obj, 'item'):  # numpy scalar
+                return round(float(obj), 2)
+            if isinstance(obj, dict):
+                return {k: _clean(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [_clean(v) for v in obj]
+            return obj
+
+        cleaned = _clean(result)
+
+        # Add recession probability
+        try:
+            composite = uf.calculate_composite_score(country)
+            cleaned["recession_probability"] = round(composite.get("recession_probability", 0), 1)
+            cleaned["composite_score"] = round(composite.get("composite_score", 0), 1)
+            cleaned["gdp_signal"] = composite.get("gdp_growth_signal", "unknown")
+        except Exception:
+            pass
+
+        cleaned["source_description"] = (
+            "Ensemble: SAJÁT (Phillips Curve + Okun's Law) + IMF WEO + "
+            "OECD CLI + FRED. Weights based on backtesting accuracy."
+        )
+
+        return json.dumps(cleaned, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e), "country": country, "indicator": indicator}, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Economic Calendar — upcoming data releases (FRED, ECB, Eurostat)
 # ---------------------------------------------------------------------------
 
@@ -2995,6 +3114,7 @@ LANDING_HTML = """<!DOCTYPE html>
     <tr><td>dbnomics_series</td><td>Idősor lekérése DBnomics-ból — sikeres lekérések receptté válnak</td></tr>
     <tr><td>dbnomics_providers</td><td>DBnomics adatszolgáltatók listája</td></tr>
     <tr><td>get_oecd_cli</td><td>OECD Composite Leading Indicator — konjunktúra-előrejelzés 30+ országra</td></tr>
+    <tr><td>forecast</td><td>Makrogazdasági prognózis — GDP, infláció, munkanélküliség (52 ország, negyedéves)</td></tr>
     <tr><td>yfinance_quote</td><td>Aktuális árfolyam (részvény, deviza, áru, index, BUX)</td></tr>
     <tr><td>yfinance_history</td><td>Historikus árfolyamadatok (napi/heti/havi OHLCV)</td></tr>
     <tr><td>mnb_current_rates</td><td>Hivatalos MNB árfolyamok (HUF, 32 deviza)</td></tr>
