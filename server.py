@@ -2667,6 +2667,10 @@ def _get_forecaster():
     if _forecaster_error:
         return None
     try:
+        import sys
+        _server_dir = os.path.dirname(os.path.abspath(__file__))
+        if _server_dir not in sys.path:
+            sys.path.insert(0, _server_dir)
         from forecaster import UltimateForecaster
         _forecaster_instance = UltimateForecaster()
         logger.info("UltimateForecaster initialized")
