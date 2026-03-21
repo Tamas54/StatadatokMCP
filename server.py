@@ -2241,6 +2241,448 @@ def get_recipe(topic: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# FRED (Federal Reserve Economic Data) — US macroeconomic indicators
+# ---------------------------------------------------------------------------
+
+_FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
+_FRED_BASE = "https://api.stlouisfed.org/fred"
+
+# Well-known FRED series for the docstring
+_FRED_POPULAR = {
+    "UNRATE": "US Unemployment Rate",
+    "PAYEMS": "Non-Farm Payrolls (thousands)",
+    "CPIAUCSL": "Consumer Price Index (All Urban)",
+    "CPILFESL": "Core CPI (excl. food & energy)",
+    "PCEPI": "PCE Price Index",
+    "GDP": "US Gross Domestic Product",
+    "INDPRO": "Industrial Production Index",
+    "DFF": "Federal Funds Effective Rate",
+    "DGS10": "10-Year Treasury Yield",
+    "DGS2": "2-Year Treasury Yield",
+    "T10Y2Y": "10Y-2Y Treasury Spread (yield curve)",
+    "HOUST": "Housing Starts",
+    "MORTGAGE30US": "30-Year Fixed Mortgage Rate",
+    "UMCSENT": "U. of Michigan Consumer Sentiment",
+    "RSAFS": "Retail Sales (total)",
+    "CIVPART": "Labor Force Participation Rate",
+    "PERMIT": "Building Permits",
+    "M2SL": "M2 Money Supply",
+    "FEDFUNDS": "Federal Funds Rate",
+    "VIXCLS": "CBOE VIX Volatility Index",
+}
+
+
+@mcp.tool()
+async def get_fred_data(
+    series_id: str,
+    limit: int = 100,
+    sort_order: str = "desc",
+    frequency: str = "",
+    units: str = "",
+) -> str:
+    """Fetch time series data from FRED (Federal Reserve Economic Data).
+
+    800,000+ US and international economic time series: interest rates, inflation,
+    employment, GDP, housing, monetary aggregates, financial markets, and more.
+
+    Args:
+        series_id: FRED series ID (e.g. "UNRATE", "DGS10", "CPIAUCSL", "GDP").
+                   Use FRED website or dbnomics_search to find series IDs.
+        limit: Number of observations to return (default: 100, max: 1000)
+        sort_order: "desc" (newest first) or "asc" (oldest first). Default: "desc"
+        frequency: Optional aggregation: "m" (monthly), "q" (quarterly), "a" (annual).
+                   Empty = native frequency of the series.
+        units: Optional transformation: "lin" (levels, default), "chg" (change),
+               "ch1" (change from year ago), "pch" (% change), "pc1" (% change from year ago),
+               "pca" (compounded annual rate of change), "log" (natural log)
+
+    Popular series:
+        UNRATE — US Unemployment Rate
+        PAYEMS — Non-Farm Payrolls
+        CPIAUCSL — CPI All Urban Consumers
+        CPILFESL — Core CPI (excl. food & energy)
+        GDP — US GDP (quarterly, billions $)
+        DFF — Federal Funds Effective Rate
+        DGS10 — 10-Year Treasury Yield
+        DGS2 — 2-Year Treasury Yield
+        T10Y2Y — 10Y-2Y Spread (yield curve inversion signal)
+        MORTGAGE30US — 30-Year Mortgage Rate
+        HOUST — Housing Starts
+        UMCSENT — Consumer Sentiment (U. of Michigan)
+        M2SL — M2 Money Supply
+        VIXCLS — VIX Volatility Index
+
+    Returns:
+        JSON with series metadata and observations (date + value pairs).
+    """
+    if not _FRED_API_KEY:
+        return json.dumps({
+            "error": "FRED_API_KEY not configured",
+            "hint": "Set FRED_API_KEY environment variable. Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html",
+        })
+
+    limit = min(max(limit, 1), 1000)
+    series_id = series_id.strip().upper()
+
+    params = {
+        "series_id": series_id,
+        "api_key": _FRED_API_KEY,
+        "file_type": "json",
+        "sort_order": sort_order,
+        "limit": limit,
+    }
+    if frequency:
+        params["frequency"] = frequency
+    if units:
+        params["units"] = units
+
+    client = await get_client()
+
+    # Fetch series info + observations in parallel
+    try:
+        info_resp, obs_resp = await asyncio.gather(
+            client.get(f"{_FRED_BASE}/series", params={
+                "series_id": series_id,
+                "api_key": _FRED_API_KEY,
+                "file_type": "json",
+            }),
+            client.get(f"{_FRED_BASE}/series/observations", params=params),
+        )
+
+        # Parse series metadata
+        meta = {}
+        if info_resp.status_code == 200:
+            serieses = info_resp.json().get("seriess", [])
+            if serieses:
+                s = serieses[0]
+                meta = {
+                    "id": s.get("id"),
+                    "title": s.get("title"),
+                    "frequency": s.get("frequency_short"),
+                    "units": s.get("units"),
+                    "seasonal_adjustment": s.get("seasonal_adjustment_short"),
+                    "last_updated": s.get("last_updated"),
+                }
+
+        # Parse observations
+        if obs_resp.status_code != 200:
+            err = obs_resp.json() if obs_resp.headers.get("content-type", "").startswith("application/json") else {}
+            return json.dumps({
+                "error": f"FRED API error: HTTP {obs_resp.status_code}",
+                "message": err.get("error_message", obs_resp.text[:200]),
+                "hint": f"Check series ID '{series_id}'. Browse https://fred.stlouisfed.org/ to find valid IDs.",
+            }, indent=2)
+
+        obs_data = obs_resp.json()
+        observations = obs_data.get("observations", [])
+
+        rows = []
+        for obs in observations:
+            val = obs.get("value", ".")
+            rows.append({
+                "date": obs.get("date"),
+                "value": float(val) if val != "." else None,
+            })
+
+        return json.dumps({
+            "source": "FRED (Federal Reserve Economic Data)",
+            "series": meta,
+            "observations": len(rows),
+            "sort_order": sort_order,
+            "data": rows,
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# OECD Composite Leading Indicator (CLI)
+# ---------------------------------------------------------------------------
+
+_OECD_SDMX_BASE = "https://sdmx.oecd.org/public/rest/data"
+
+# 2-letter to 3-letter ISO mapping for OECD
+_OECD_COUNTRY_MAP = {
+    "DE": "DEU", "FR": "FRA", "IT": "ITA", "ES": "ESP",
+    "NL": "NLD", "BE": "BEL", "AT": "AUT", "PL": "POL",
+    "CZ": "CZE", "HU": "HUN", "SE": "SWE", "DK": "DNK",
+    "FI": "FIN", "PT": "PRT", "GR": "GRC", "IE": "IRL",
+    "US": "USA", "GB": "GBR", "UK": "GBR", "JP": "JPN",
+    "CN": "CHN", "CA": "CAN", "AU": "AUS", "KR": "KOR",
+    "MX": "MEX", "BR": "BRA", "IN": "IND", "RU": "RUS",
+    "ZA": "ZAF", "TR": "TUR", "CH": "CHE", "NO": "NOR",
+    "SK": "SVK", "SI": "SVN", "EE": "EST", "LV": "LVA",
+    "LT": "LTU", "HR": "HRV", "BG": "BGR", "RO": "ROU",
+}
+
+
+@mcp.tool()
+async def get_oecd_cli(
+    country: str = "HUN",
+    periods: int = 12,
+) -> str:
+    """Get the OECD Composite Leading Indicator (CLI) for a country.
+
+    The CLI predicts turning points in business cycles 6-9 months ahead.
+    Values above 100 = expansion, below 100 = contraction.
+
+    Args:
+        country: Country code — 2-letter (HU, DE, US) or 3-letter (HUN, DEU, USA).
+                 Available: DE, FR, IT, ES, NL, BE, AT, PL, CZ, HU, SE, DK, FI, PT, GR, IE,
+                 US, GB, JP, CN, CA, AU, KR, MX, BR, IN, RU, ZA, TR, CH, NO
+        periods: Number of monthly observations (default: 12)
+
+    Returns:
+        JSON with CLI value, trend direction, momentum (expansion/contraction), and history.
+
+    Interpretation:
+        CLI > 100 + trending up → strong expansion ahead
+        CLI > 100 + trending down → expansion peaking, slowdown coming
+        CLI < 100 + trending down → contraction deepening
+        CLI < 100 + trending up → contraction bottoming, recovery coming
+    """
+    # Normalize country code
+    code = country.strip().upper()
+    code_3 = _OECD_COUNTRY_MAP.get(code, code)
+
+    # OECD SDMX CLI dataflow
+    dataflow = "OECD.SDD.STES,DSD_STES@DF_CLI"
+    dimension_path = f"{code_3}.M.LI...AA.IX..H"
+    url = f"{_OECD_SDMX_BASE}/{dataflow}/{dimension_path}"
+
+    client = await get_client()
+    try:
+        resp = await client.get(url, params={
+            "lastNObservations": periods,
+            "dimensionAtObservation": "AllDimensions",
+            "format": "csvfilewithlabels",
+        }, timeout=20.0)
+        resp.raise_for_status()
+
+        # Parse CSV response
+        reader = csv.DictReader(io.StringIO(resp.text))
+        rows = list(reader)
+
+        if not rows or "OBS_VALUE" not in rows[0]:
+            return json.dumps({
+                "error": f"No CLI data for country '{code}' ({code_3})",
+                "hint": "CLI is available for ~30 OECD+ countries. Try: HU, DE, US, JP, CN, GB",
+            }, indent=2)
+
+        values = []
+        periods_list = []
+        for row in rows:
+            try:
+                val = float(row["OBS_VALUE"])
+                values.append(val)
+                periods_list.append(row.get("TIME_PERIOD", ""))
+            except (ValueError, KeyError):
+                continue
+
+        if not values:
+            return json.dumps({"error": f"No valid CLI observations for {code_3}"}, indent=2)
+
+        latest = values[-1]
+
+        # Trend: 3-month change
+        trend = None
+        trend_direction = "unknown"
+        if len(values) >= 4:
+            trend = round(values[-1] - values[-4], 3)
+            if trend > 0.2:
+                trend_direction = "improving"
+            elif trend < -0.2:
+                trend_direction = "worsening"
+            else:
+                trend_direction = "stable"
+
+        history = [
+            {"period": p, "value": round(v, 2)}
+            for p, v in zip(periods_list, values)
+        ]
+
+        return json.dumps({
+            "source": "OECD Composite Leading Indicator",
+            "country": code_3,
+            "latest_value": round(latest, 2),
+            "latest_period": periods_list[-1] if periods_list else None,
+            "momentum": "expansion" if latest > 100 else "contraction",
+            "trend_3m": trend,
+            "trend_direction": trend_direction,
+            "interpretation": (
+                f"CLI={round(latest, 2)}: {'above' if latest > 100 else 'below'} 100 "
+                f"({trend_direction}) → "
+                + ("strong expansion ahead" if latest > 100 and trend and trend > 0
+                   else "expansion peaking" if latest > 100 and trend and trend <= 0
+                   else "contraction bottoming, recovery" if latest <= 100 and trend and trend > 0
+                   else "contraction deepening")
+            ),
+            "history": history,
+        }, ensure_ascii=False, indent=2)
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return json.dumps({
+                "error": f"No CLI data for '{code}' ({code_3})",
+                "hint": "Try: HU, DE, FR, IT, ES, US, GB, JP, CN, CA, AU, KR, BR, MX, TR, IN",
+            }, indent=2)
+        return json.dumps({"error": f"OECD API error: HTTP {e.response.status_code}"}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Economic Calendar — upcoming data releases (FRED, ECB, Eurostat)
+# ---------------------------------------------------------------------------
+
+# ECB Governing Council meeting dates (2025-2026, official schedule)
+_ECB_MEETINGS_2025_2026 = [
+    "2025-01-30", "2025-03-06", "2025-04-17", "2025-06-05",
+    "2025-07-24", "2025-09-11", "2025-10-30", "2025-12-18",
+    "2026-01-22", "2026-03-05", "2026-04-16", "2026-06-04",
+    "2026-07-16", "2026-09-10", "2026-10-29", "2026-12-17",
+]
+
+# FRED release schedule metadata
+_FRED_CALENDAR_SERIES = {
+    "UNRATE": {"name": "US Unemployment Rate", "freq": "monthly", "delay_days": 35, "importance": "high", "time": "08:30 ET"},
+    "PAYEMS": {"name": "US Non-Farm Payrolls", "freq": "monthly", "delay_days": 35, "importance": "high", "time": "08:30 ET"},
+    "CPIAUCSL": {"name": "US CPI", "freq": "monthly", "delay_days": 14, "importance": "high", "time": "08:30 ET"},
+    "CPILFESL": {"name": "US Core CPI", "freq": "monthly", "delay_days": 14, "importance": "high", "time": "08:30 ET"},
+    "GDP": {"name": "US GDP", "freq": "quarterly", "delay_days": 30, "importance": "high", "time": "08:30 ET"},
+    "RSAFS": {"name": "US Retail Sales", "freq": "monthly", "delay_days": 15, "importance": "medium", "time": "08:30 ET"},
+    "INDPRO": {"name": "US Industrial Production", "freq": "monthly", "delay_days": 17, "importance": "medium", "time": "09:15 ET"},
+    "HOUST": {"name": "US Housing Starts", "freq": "monthly", "delay_days": 18, "importance": "medium", "time": "08:30 ET"},
+    "UMCSENT": {"name": "US Consumer Sentiment (UMich)", "freq": "monthly", "delay_days": -2, "importance": "medium", "time": "10:00 ET"},
+}
+
+# Eurostat release schedule metadata
+_EUROSTAT_CALENDAR = {
+    "prc_hicp_manr": {"name": "Euro Area HICP (Flash)", "freq": "monthly", "delay_days": 17, "importance": "high", "time": "11:00 CET"},
+    "nama_10_gdp_flash": {"name": "Euro Area GDP (Flash)", "freq": "quarterly", "delay_days": 45, "importance": "high", "time": "11:00 CET"},
+    "une_rt_m": {"name": "Euro Area Unemployment", "freq": "monthly", "delay_days": 65, "importance": "high", "time": "11:00 CET"},
+    "sts_inpr_m": {"name": "Euro Area Industrial Production", "freq": "monthly", "delay_days": 45, "importance": "medium", "time": "11:00 CET"},
+}
+
+
+def _estimate_release_dates(freq: str, delay_days: int, start_date, end_date) -> list[str]:
+    """Estimate release dates based on frequency and typical delay."""
+    from datetime import date as date_cls, timedelta
+    dates = []
+
+    if freq == "monthly":
+        # Go back a few months to catch releases that fall in our window
+        cur = start_date.replace(day=1) - timedelta(days=90)
+        while cur <= end_date:
+            # Reference month end → add delay
+            next_month_1st = (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
+            if delay_days >= 0:
+                release = next_month_1st + timedelta(days=delay_days - 1)
+            else:
+                # Negative delay = released before month end
+                release = next_month_1st + timedelta(days=delay_days)
+            if start_date <= release <= end_date:
+                dates.append(release.isoformat())
+            cur = next_month_1st
+    elif freq == "quarterly":
+        from datetime import date as d
+        for year in range(start_date.year - 1, end_date.year + 1):
+            for q_end in [d(year, 3, 31), d(year, 6, 30), d(year, 9, 30), d(year, 12, 31)]:
+                release = q_end + timedelta(days=delay_days)
+                if start_date <= release <= end_date:
+                    dates.append(release.isoformat())
+
+    return dates
+
+
+@mcp.tool()
+def get_economic_calendar(
+    days_ahead: int = 14,
+    region: str = "all",
+) -> str:
+    """Get upcoming economic data releases and central bank events.
+
+    Covers FRED (US), ECB meetings, and Eurostat (Euro Area) release schedule.
+    Useful for knowing what data is coming this week/month.
+
+    Args:
+        days_ahead: Number of days to look ahead (default: 14, max: 90)
+        region: Filter by region: "us", "eu", "ecb", or "all" (default: "all")
+
+    Returns:
+        JSON list of upcoming events with date, indicator name, importance, source.
+    """
+    from datetime import date as date_cls, timedelta
+    days_ahead = min(max(days_ahead, 1), 90)
+    today = date_cls.today()
+    end = today + timedelta(days=days_ahead)
+    region = region.lower().strip()
+
+    events: list[dict] = []
+
+    # --- FRED releases ---
+    if region in ("all", "us"):
+        for series_id, info in _FRED_CALENDAR_SERIES.items():
+            for release_date in _estimate_release_dates(info["freq"], info["delay_days"], today, end):
+                events.append({
+                    "date": release_date,
+                    "time": info["time"],
+                    "indicator": info["name"],
+                    "series_id": series_id,
+                    "importance": info["importance"],
+                    "region": "US",
+                    "source": "FRED",
+                })
+
+    # --- ECB meetings ---
+    if region in ("all", "eu", "ecb"):
+        for meeting_date_str in _ECB_MEETINGS_2025_2026:
+            md = date_cls.fromisoformat(meeting_date_str)
+            if today <= md <= end:
+                events.append({
+                    "date": meeting_date_str,
+                    "time": "13:45 CET",
+                    "indicator": "ECB Governing Council — Interest Rate Decision",
+                    "importance": "high",
+                    "region": "EUR",
+                    "source": "ECB",
+                })
+                events.append({
+                    "date": meeting_date_str,
+                    "time": "14:30 CET",
+                    "indicator": "ECB Press Conference",
+                    "importance": "high",
+                    "region": "EUR",
+                    "source": "ECB",
+                })
+
+    # --- Eurostat releases ---
+    if region in ("all", "eu"):
+        for ds_code, info in _EUROSTAT_CALENDAR.items():
+            for release_date in _estimate_release_dates(info["freq"], info["delay_days"], today, end):
+                events.append({
+                    "date": release_date,
+                    "time": info["time"],
+                    "indicator": info["name"],
+                    "dataset": ds_code,
+                    "importance": info["importance"],
+                    "region": "EUR",
+                    "source": "Eurostat",
+                })
+
+    # Sort by date
+    events.sort(key=lambda e: e["date"])
+
+    return json.dumps({
+        "period": f"{today.isoformat()} → {end.isoformat()}",
+        "region_filter": region,
+        "total_events": len(events),
+        "events": events,
+    }, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Landing page
 # ---------------------------------------------------------------------------
 LANDING_HTML = """<!DOCTYPE html>
@@ -2437,6 +2879,9 @@ LANDING_HTML = """<!DOCTYPE html>
     <tr><td>mnb_historical_rates</td><td>MNB historikus árfolyamok (1949-től)</td></tr>
     <tr><td>calculate</td><td>Gazdasági kalkulátor (infláció, CAGR, reálérték, konverzió)</td></tr>
     <tr><td>get_recipe</td><td>Recept-keresés: kész lekérési sablonok gyakori makroadatokhoz</td></tr>
+    <tr><td>get_fred_data</td><td>FRED — 800K+ US gazdasági idősor (kamatok, infláció, GDP, munkaerő…)</td></tr>
+    <tr><td>get_oecd_cli</td><td>OECD Composite Leading Indicator — konjunktúra-előrejelzés 30+ országra</td></tr>
+    <tr><td>get_economic_calendar</td><td>Gazdasági naptár — közelgő adatközlések (FRED, ECB, Eurostat)</td></tr>
   </table>
 </div>
 
