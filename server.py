@@ -14,12 +14,14 @@ Tools:
   - dbnomics_series: Fetch time series data from DBnomics
 """
 
+import asyncio
 import csv
 import io
 import os
 import json
 import logging
 import re
+import sqlite3
 import time
 from typing import Optional
 
@@ -393,23 +395,21 @@ async def search_datasets(
         ]
 
     if "ksh" in sources:
-        query_lower = query.lower()
-        keywords = query_lower.split()
-        ksh_scored = []
+        # Search STADAT via SQLite index (auto-scanned) + static fallback
+        db_results = _search_stadat_db(query, limit)
+        if not db_results:
+            # Fallback to static catalog if DB empty
+            keywords = query.lower().split()
+            for code, title in KSH_STADAT_CATALOG.items():
+                text = f"{code} {title}".lower()
+                score = sum(1 for kw in keywords if kw in text)
+                if score > 0:
+                    db_results.append({"code": code, "title": title, "tool": "get_ksh_stadat", "source": "ksh_stadat"})
 
-        # Search STADAT catalog with scoring (OR logic)
-        for code, title in KSH_STADAT_CATALOG.items():
-            text = f"{code} {title}".lower()
-            score = sum(1 for kw in keywords if kw in text)
-            if score > 0:
-                ksh_scored.append((score, {
-                    "code": code,
-                    "title": title,
-                    "tool": "get_ksh_stadat",
-                    "source": "ksh_stadat",
-                }))
+        ksh_scored = [(0, r) for r in db_results]
 
         # Also search HVD datasets
+        keywords = query.lower().split()
         datasets = await _load_ksh_datasets()
         for ds in datasets:
             searchable = json.dumps(ds, ensure_ascii=False).lower()
@@ -422,8 +422,6 @@ async def search_datasets(
                     "source": "ksh_hvd",
                 }))
 
-        # Sort by score and take top results
-        ksh_scored.sort(key=lambda x: -x[0])
         results["ksh"] = [e for _, e in ksh_scored[:limit]]
 
     if "dbnomics" in sources:
@@ -939,8 +937,159 @@ async def dbnomics_series(
 # ---------------------------------------------------------------------------
 KSH_STADAT_BASE = "https://www.ksh.hu/stadat_files"
 
-# Curated catalog of STADAT tables — updated 2026-03-21 via KSH deep research (2 rounds)
-# Prefix changes: kul→kkr, ksk→bel, pen→pze(!!), wages ber→mun
+# All 27 official KSH STADAT category prefixes
+ALL_KSH_PREFIXES = [
+    "ara", "bel", "ber", "ege", "ele", "ene", "epi", "fol", "gsz",
+    "ido", "iga", "ikt", "ipa", "jov", "kkr", "kor", "ksp", "lak",
+    "mez", "mun", "gdp", "nep", "okt", "sza", "szo", "tte", "tur",
+]
+
+# SQLite-based dynamic index — auto-discovered from KSH website
+KSH_STADAT_DB_PATH = os.environ.get("KSH_DB_PATH", "/tmp/ksh_stadat_index.db")
+KSH_STADAT_DB_TTL = 7 * 86400  # 7 days
+_ksh_scan_running = False
+
+
+def _init_stadat_db():
+    """Create the SQLite database and table if needed."""
+    conn = sqlite3.connect(KSH_STADAT_DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS stadat_tables (
+            code TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            category TEXT NOT NULL,
+            scanned_at REAL NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON stadat_tables(category)")
+    conn.commit()
+    conn.close()
+
+
+def _db_is_fresh() -> bool:
+    """Check if the SQLite index is populated and fresh."""
+    if not os.path.exists(KSH_STADAT_DB_PATH):
+        return False
+    try:
+        conn = sqlite3.connect(KSH_STADAT_DB_PATH)
+        row = conn.execute("SELECT MIN(scanned_at) FROM stadat_tables").fetchone()
+        conn.close()
+        if row and row[0]:
+            return (time.time() - row[0]) < KSH_STADAT_DB_TTL
+    except Exception:
+        pass
+    return False
+
+
+def _search_stadat_db(query: str, limit: int = 20) -> list[dict]:
+    """Search the SQLite index for STADAT tables matching keywords."""
+    if not os.path.exists(KSH_STADAT_DB_PATH):
+        return []
+    try:
+        conn = sqlite3.connect(KSH_STADAT_DB_PATH)
+        rows = conn.execute("SELECT code, title, category FROM stadat_tables").fetchall()
+        conn.close()
+    except Exception:
+        return []
+
+    keywords = query.lower().split()
+    if not keywords:
+        return []
+
+    scored = []
+    for code, title, category in rows:
+        text = f"{code} {title} {category}".lower()
+        score = sum(1 for kw in keywords if kw in text)
+        if score > 0:
+            scored.append((score, {"code": code, "title": title, "tool": "get_ksh_stadat", "source": "ksh_stadat"}))
+
+    scored.sort(key=lambda x: -x[0])
+    return [e for _, e in scored[:limit]]
+
+
+def _seed_db_from_static():
+    """Seed the DB with the static catalog so search works immediately."""
+    _init_stadat_db()
+    conn = sqlite3.connect(KSH_STADAT_DB_PATH)
+    now = time.time()
+    for code, title in KSH_STADAT_CATALOG.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO stadat_tables (code, title, category, scanned_at) VALUES (?, ?, ?, ?)",
+            (code, title, code[:3], now),
+        )
+    conn.commit()
+    conn.close()
+    logger.info(f"Seeded STADAT DB with {len(KSH_STADAT_CATALOG)} static entries")
+
+
+async def _scan_ksh_stadat_background():
+    """Background task: scan all KSH STADAT categories for available tables."""
+    global _ksh_scan_running
+    if _ksh_scan_running:
+        return
+    _ksh_scan_running = True
+
+    logger.info("Starting KSH STADAT full scan (background)...")
+    _init_stadat_db()
+    client = await get_client()
+    sem = asyncio.Semaphore(15)  # conservative: 15 concurrent requests
+    now = time.time()
+    total_found = 0
+
+    async def check_table(prefix: str, num: int) -> Optional[tuple]:
+        code = f"{prefix}{num:04d}"
+        url = f"{KSH_STADAT_BASE}/{prefix}/hu/{code}.csv"
+        async with sem:
+            try:
+                resp = await client.get(url, timeout=10.0)
+                if resp.status_code == 200:
+                    try:
+                        text = resp.content.decode("windows-1250")
+                    except (UnicodeDecodeError, LookupError):
+                        text = resp.content.decode("utf-8", errors="replace")
+                    first_line = text.split("\n", 1)[0]
+                    title = first_line.split(";")[0].strip().strip('"')
+                    return (code, title or code, prefix)
+            except Exception:
+                pass
+        return None
+
+    for prefix in ALL_KSH_PREFIXES:
+        # Scan with early stop: quit after 20 consecutive 404s
+        consecutive_miss = 0
+        batch_found = 0
+
+        for num in range(1, 301):
+            if consecutive_miss >= 20:
+                break
+
+            result = await check_table(prefix, num)
+            if result:
+                consecutive_miss = 0
+                batch_found += 1
+                code, title, cat = result
+                try:
+                    conn = sqlite3.connect(KSH_STADAT_DB_PATH)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO stadat_tables (code, title, category, scanned_at) VALUES (?, ?, ?, ?)",
+                        (code, title, cat, now),
+                    )
+                    conn.commit()
+                    conn.close()
+                except Exception:
+                    pass
+            else:
+                consecutive_miss += 1
+
+        total_found += batch_found
+        if batch_found > 0:
+            logger.info(f"  {prefix}: {batch_found} tables found")
+
+    _ksh_scan_running = False
+    logger.info(f"KSH STADAT scan complete: {total_found} tables total")
+
+
+# Curated static catalog — used as seed + fallback
 KSH_STADAT_CATALOG = {
     # --- GDP, national accounts (gdp) ---
     "gdp0001": "A bruttó hazai termék (GDP) értéke és volumenváltozása",
@@ -1790,8 +1939,36 @@ function copyConfig(id, btn) {
 </html>"""
 
 
+# ---------------------------------------------------------------------------
+# Startup: seed DB + trigger background scan
+# ---------------------------------------------------------------------------
+_seed_db_from_static()
+
+if not _db_is_fresh():
+    # Will be picked up by the event loop once the server starts
+    @mcp.custom_route("/_scan_trigger", methods=["GET"])
+    async def _trigger_scan(request):
+        """Hidden endpoint to trigger KSH scan (also auto-triggered on first tool call)."""
+        asyncio.create_task(_scan_ksh_stadat_background())
+        return HTMLResponse("Scan started")
+
+    _scan_scheduled = True
+    logger.info("KSH STADAT index is stale — scan will start on first request")
+else:
+    _scan_scheduled = False
+    logger.info("KSH STADAT index is fresh — using cached DB")
+
+
+# Wrap search to auto-trigger scan on first use
+_original_search = search_datasets.__wrapped__ if hasattr(search_datasets, '__wrapped__') else None
+
 @mcp.custom_route("/", methods=["GET"])
 async def landing_page(request):
+    # Trigger background scan on first page visit if needed
+    global _scan_scheduled
+    if _scan_scheduled and not _ksh_scan_running:
+        _scan_scheduled = False
+        asyncio.create_task(_scan_ksh_stadat_background())
     return HTMLResponse(LANDING_HTML)
 
 
