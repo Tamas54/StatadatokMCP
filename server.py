@@ -2071,6 +2071,233 @@ def mnb_historical_rates(
 
 
 # ---------------------------------------------------------------------------
+# Recipe lookup — curated dataset+dimension combos for common macro queries
+# ---------------------------------------------------------------------------
+
+_MACRO_RECIPES: dict[str, dict] = {
+    # ── KAMATOK / INTEREST RATES ──────────────────────────────────────────
+    "policy_rate_PL": {
+        "provider": "IMF",
+        "dataset": "IFS",
+        "dimensions": {"FREQ": "Q", "REF_AREA": "PL", "INDICATOR": "FPOLM_PA"},
+        "note": "Poland monetary policy rate, quarterly (IMF IFS)",
+    },
+    "short_rate_HU": {
+        "provider": "OECD",
+        "dataset": "DP_LIVE",
+        "dimensions": {"LOCATION": "HUN", "INDICATOR": "STINT", "FREQUENCY": "Q"},
+        "note": "Hungary short-term interest rate, quarterly (OECD)",
+    },
+    "short_rate_PL": {
+        "provider": "OECD",
+        "dataset": "DP_LIVE",
+        "dimensions": {"LOCATION": "POL", "INDICATOR": "STINT", "FREQUENCY": "Q"},
+        "note": "Poland short-term interest rate, quarterly (OECD)",
+    },
+    "short_rate_EA": {
+        "provider": "OECD",
+        "dataset": "DP_LIVE",
+        "dimensions": {"LOCATION": "EA19", "INDICATOR": "STINT", "FREQUENCY": "Q"},
+        "note": "Euro area short-term interest rate, quarterly (OECD)",
+    },
+    "ecb_main_refi": {
+        "provider": "ECB",
+        "dataset": "FM",
+        "series_code": "B.U2.EUR.4F.KR.MRR_FR.LEV",
+        "note": "ECB main refinancing operations rate",
+    },
+    # ── BÉREK / WAGES ─────────────────────────────────────────────────────
+    "wages_SI_gross": {
+        "provider": "Eurostat",
+        "dataset": "earn_nt_net",
+        "dimensions": {"geo": "SI", "currency": "EUR", "estruct": "GRS_P1_NCH_AW100"},
+        "note": "Slovenia gross annual earnings, single earner 100% AW, EUR",
+    },
+    "wages_EE_gross": {
+        "provider": "Eurostat",
+        "dataset": "earn_nt_net",
+        "dimensions": {"geo": "EE", "currency": "EUR", "estruct": "GRS_P1_NCH_AW100"},
+        "note": "Estonia gross annual earnings, single earner 100% AW, EUR",
+    },
+    "wages_SI_net": {
+        "provider": "Eurostat",
+        "dataset": "earn_nt_net",
+        "dimensions": {"geo": "SI", "currency": "EUR", "estruct": "NET_P1_NCH_AW100"},
+        "note": "Slovenia net annual earnings, single earner 100% AW, EUR",
+    },
+    "wages_EE_net": {
+        "provider": "Eurostat",
+        "dataset": "earn_nt_net",
+        "dimensions": {"geo": "EE", "currency": "EUR", "estruct": "NET_P1_NCH_AW100"},
+        "note": "Estonia net annual earnings, single earner 100% AW, EUR",
+    },
+    "wages_pps_SI": {
+        "provider": "Eurostat",
+        "dataset": "earn_nt_netft",
+        "dimensions": {"geo": "SI", "estruct": "VAL_A", "currency": "PPS"},
+        "note": "Slovenia annual net earnings in PPS (purchasing power standard)",
+    },
+    "wages_pps_EE": {
+        "provider": "Eurostat",
+        "dataset": "earn_nt_netft",
+        "dimensions": {"geo": "EE", "estruct": "VAL_A", "currency": "PPS"},
+        "note": "Estonia annual net earnings in PPS (purchasing power standard)",
+    },
+    "wages_HU_sector": {
+        "provider": "KSH",
+        "dataset": "mun0183",
+        "note": "Hungary gross average earnings by sector (KSH STADAT). Use get_ksh_stadat(table_code='mun0183').",
+    },
+    "wages_HU_monthly": {
+        "provider": "KSH",
+        "dataset": "mun0143",
+        "note": "Hungary monthly gross average earnings (KSH STADAT). Use get_ksh_stadat(table_code='mun0143').",
+    },
+    # ── INFLÁCIÓ / INFLATION ──────────────────────────────────────────────
+    "cpi_HU": {
+        "provider": "KSH",
+        "dataset": "ara0001",
+        "note": "Hungary consumer price index (KSH STADAT). Use get_ksh_stadat(table_code='ara0001').",
+    },
+    "hicp_EA_index": {
+        "provider": "Eurostat",
+        "dataset": "prc_hicp_aind",
+        "dimensions": {"geo": "EA", "coicop": "CP00", "unit": "INX_A_AVG"},
+        "note": "Euro area HICP annual average index (all items, 2015=100)",
+    },
+    "hicp_annual_rate": {
+        "provider": "Eurostat",
+        "dataset": "prc_hicp_manr",
+        "dimensions": {"coicop": "CP00", "unit": "RCH_A"},
+        "note": "HICP monthly annual rate of change — add geo param (e.g. geo=HU,SI) for specific countries",
+    },
+    # ── ÁRFOLYAM / EXCHANGE RATES ─────────────────────────────────────────
+    "eur_huf_current": {
+        "provider": "MNB",
+        "tool": "mnb_current_rates",
+        "call_example": "mnb_current_rates(currencies='EUR')",
+        "note": "Current EUR/HUF official MNB rate",
+    },
+    "eur_huf_historical": {
+        "provider": "MNB",
+        "tool": "mnb_historical_rates",
+        "call_example": "mnb_historical_rates(start_date='2020-01-01', end_date='2024-12-31', currencies='EUR')",
+        "note": "Historical EUR/HUF rates from MNB (available since 1949)",
+    },
+    # ── GDP ────────────────────────────────────────────────────────────────
+    "gdp_HU": {
+        "provider": "KSH",
+        "dataset": "gdp0001",
+        "note": "Hungary GDP data (KSH STADAT). Use get_ksh_stadat(table_code='gdp0001').",
+    },
+    "gdp_growth_EU": {
+        "provider": "Eurostat",
+        "dataset": "namq_10_gdp",
+        "dimensions": {"na_item": "B1GQ", "unit": "CLV_PCH_PRE"},
+        "note": "EU GDP growth rate, quarterly. Also try tec00115 for annual overview. Add geo param for country filter.",
+    },
+}
+
+# Search keywords mapped to recipe keys — lowercase, includes synonyms
+_RECIPE_SEARCH_TAGS: dict[str, list[str]] = {
+    "policy_rate_PL": ["policy rate", "poland", "lengyel", "lengyelország", "kamat", "interest rate", "jegybanki", "monetary policy", "imf", "pl"],
+    "short_rate_HU": ["short rate", "hungary", "magyar", "magyarország", "kamat", "interest rate", "rövid", "oecd", "hu"],
+    "short_rate_PL": ["short rate", "poland", "lengyel", "lengyelország", "kamat", "interest rate", "rövid", "oecd", "pl"],
+    "short_rate_EA": ["short rate", "euro area", "eurozone", "eurózóna", "ea", "kamat", "interest rate", "rövid", "oecd"],
+    "ecb_main_refi": ["ecb", "refinancing", "refi", "main rate", "irányadó", "kamat", "interest rate", "european central bank"],
+    "wages_SI_gross": ["wages", "salary", "earnings", "gross", "bruttó", "bér", "fizetés", "kereset", "slovenia", "szlovénia", "si"],
+    "wages_EE_gross": ["wages", "salary", "earnings", "gross", "bruttó", "bér", "fizetés", "kereset", "estonia", "észtország", "ee"],
+    "wages_SI_net": ["wages", "salary", "earnings", "net", "nettó", "bér", "fizetés", "kereset", "slovenia", "szlovénia", "si"],
+    "wages_EE_net": ["wages", "salary", "earnings", "net", "nettó", "bér", "fizetés", "kereset", "estonia", "észtország", "ee"],
+    "wages_pps_SI": ["wages", "salary", "earnings", "pps", "purchasing power", "vásárlóerő", "bér", "fizetés", "slovenia", "szlovénia", "si"],
+    "wages_pps_EE": ["wages", "salary", "earnings", "pps", "purchasing power", "vásárlóerő", "bér", "fizetés", "estonia", "észtország", "ee"],
+    "wages_HU_sector": ["wages", "salary", "earnings", "sector", "ágazat", "bér", "fizetés", "kereset", "hungary", "magyar", "hu"],
+    "wages_HU_monthly": ["wages", "salary", "earnings", "monthly", "havi", "bér", "fizetés", "kereset", "hungary", "magyar", "hu", "átlag"],
+    "cpi_HU": ["cpi", "consumer price", "inflation", "infláció", "fogyasztói ár", "hungary", "magyar", "hu"],
+    "hicp_EA_index": ["hicp", "harmonized", "harmonizált", "price index", "inflation", "infláció", "euro area", "ea", "index"],
+    "hicp_annual_rate": ["hicp", "inflation", "infláció", "annual rate", "éves", "ráta", "price change"],
+    "eur_huf_current": ["eur", "huf", "forint", "euro", "exchange rate", "árfolyam", "current", "mai", "aktuális", "mnb"],
+    "eur_huf_historical": ["eur", "huf", "forint", "euro", "exchange rate", "árfolyam", "historical", "történeti", "múltbeli", "mnb"],
+    "gdp_HU": ["gdp", "gross domestic product", "bruttó hazai termék", "hungary", "magyar", "hu"],
+    "gdp_growth_EU": ["gdp", "growth", "növekedés", "eu", "europe", "európa", "quarterly", "negyedéves"],
+}
+
+
+@mcp.tool()
+def get_recipe(
+    topic: str,
+) -> str:
+    """Look up curated data recipes for common macroeconomic queries.
+
+    Returns the exact provider, dataset code, and dimension filters needed
+    to fetch data — no trial and error required.
+
+    Covers: interest rates, wages/earnings, inflation/CPI/HICP, exchange rates, GDP.
+    Searchable in English and Hungarian.
+
+    Args:
+        topic: Search phrase (e.g. "kamat lengyelország", "wages slovenia",
+               "inflation hungary", "ecb rate", "gdp eu", "árfolyam eur huf",
+               "bér szlovénia", "hicp euro area")
+
+    Returns:
+        JSON with provider, dataset, dimensions/series_code, and usage notes.
+        If no match: returns error with hint to use search_datasets or dbnomics_search.
+    """
+    if not topic or not topic.strip():
+        return json.dumps({
+            "error": "Please provide a search topic",
+            "hint": "Examples: 'wages slovenia', 'kamat lengyelország', 'inflation hungary', 'gdp eu'",
+            "available_topics": "interest rates, wages, inflation, exchange rates, GDP",
+        }, ensure_ascii=False, indent=2)
+
+    query_lower = topic.lower().strip()
+    query_words = query_lower.split()
+
+    # Score each recipe by keyword overlap
+    scored: list[tuple[int, str, dict]] = []
+    for key, tags in _RECIPE_SEARCH_TAGS.items():
+        score = 0
+        for qw in query_words:
+            for tag in tags:
+                if qw in tag or tag in query_lower:
+                    score += 1
+                    break
+        # Bonus: exact recipe key match
+        if query_lower == key or query_lower.replace(" ", "_") == key:
+            score += 100
+        if score > 0:
+            scored.append((score, key, _MACRO_RECIPES[key]))
+
+    if not scored:
+        return json.dumps({
+            "error": "No recipe found",
+            "query": topic,
+            "hint": "Use search_datasets() or dbnomics_search() for broader search",
+            "available_recipes": sorted(_MACRO_RECIPES.keys()),
+        }, ensure_ascii=False, indent=2)
+
+    # Sort by score descending
+    scored.sort(key=lambda x: -x[0])
+
+    # Return top matches
+    matches = []
+    for score, key, recipe in scored[:5]:
+        entry = {"recipe_key": key, **recipe}
+        matches.append(entry)
+
+    if len(matches) == 1:
+        return json.dumps(matches[0], ensure_ascii=False, indent=2)
+
+    return json.dumps({
+        "query": topic,
+        "matches": len(matches),
+        "recipes": matches,
+        "tip": "Use the recipe_key as topic for exact match, e.g. get_recipe('wages_SI_gross')",
+    }, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Landing page
 # ---------------------------------------------------------------------------
 LANDING_HTML = """<!DOCTYPE html>
@@ -2266,6 +2493,7 @@ LANDING_HTML = """<!DOCTYPE html>
     <tr><td>mnb_current_rates</td><td>Hivatalos MNB árfolyamok (HUF, 32 deviza)</td></tr>
     <tr><td>mnb_historical_rates</td><td>MNB historikus árfolyamok (1949-től)</td></tr>
     <tr><td>calculate</td><td>Gazdasági kalkulátor (infláció, CAGR, reálérték, konverzió)</td></tr>
+    <tr><td>get_recipe</td><td>Makro adatlekérési receptek — kamatok, bérek, infláció, GDP, árfolyam</td></tr>
   </table>
 </div>
 
