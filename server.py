@@ -374,7 +374,14 @@ async def search_datasets(
     global _scan_scheduled
     if _scan_scheduled and not _ksh_scan_running:
         _scan_scheduled = False
-        asyncio.create_task(_scan_ksh_stadat_background())
+
+        async def _safe_scan():
+            try:
+                await _scan_ksh_stadat_background()
+            except Exception as e:
+                logger.error(f"KSH scan crashed: {e}")
+
+        asyncio.create_task(_safe_scan())
 
     # Guard against empty query
     if not query or not query.strip():
@@ -1014,18 +1021,20 @@ def _search_stadat_db(query: str, limit: int = 20) -> list[dict]:
 
 
 def _seed_db_from_static():
-    """Seed the DB with the static catalog so search works immediately."""
+    """Seed the DB with the static catalog so search works immediately.
+
+    Uses timestamp 0 so _db_is_fresh() returns False and triggers a full scan.
+    """
     _init_stadat_db()
     conn = sqlite3.connect(KSH_STADAT_DB_PATH)
-    now = time.time()
     for code, title in KSH_STADAT_CATALOG.items():
         conn.execute(
             "INSERT OR IGNORE INTO stadat_tables (code, title, category, scanned_at) VALUES (?, ?, ?, ?)",
-            (code, title, code[:3], now),
+            (code, title, code[:3], 0.0),  # timestamp 0 = needs full scan
         )
     conn.commit()
     conn.close()
-    logger.info(f"Seeded STADAT DB with {len(KSH_STADAT_CATALOG)} static entries")
+    logger.info(f"Seeded STADAT DB with {len(KSH_STADAT_CATALOG)} static entries (scan pending)")
 
 
 async def _scan_ksh_stadat_background():
