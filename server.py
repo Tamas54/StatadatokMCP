@@ -1037,7 +1037,22 @@ KSH_STADAT_CATALOG = {
     "nep0007": "Születéskor várható átlagos élettartam",
     "nep0011": "Belföldi és nemzetközi vándorlás",
     "nep0015": "Népesség vármegyénként (január 1.)",
-    # --- Government finance: NO STADAT CSV exists! Use Eurostat gov_10dd_ggd ---
+    # --- Government finance (under gdp prefix!) ---
+    "gdp0017": "A kormányzati szektor főbb adatai (államháztartás)",
+    "gdp0018": "A kormányzat végső fogyasztási kiadása funkciók szerint (COFOG)",
+    "gdp0019": "Adókból és tb hozzájárulásokból származó bevételek – összefoglaló",
+    "gdp0031": "Támogatások összefoglaló adatai",
+    "gdp0110": "A kormányzati szektor főbb negyedéves adatai",
+    "gdp0121": "A kormányzati szektor negyedéves egyéb adatai alszektorosan",
+    # --- Household sector (under gdp prefix) ---
+    "gdp0032": "A háztartási szektor jövedelem- és tőkeszámlái",
+    "gdp0035": "Reáljövedelem – reálbérindex",
+    # --- Regional GDP ---
+    "gdp0077": "Bruttó hazai termék (GDP) vármegye és régió szerint",
+    "gdp0078": "Egy főre jutó bruttó hazai termék vármegye és régió szerint",
+    # --- International comparison ---
+    "gdp0079": "A GDP nagysága folyó áron – ESA2010 (milliárd euró, EU összehasonlítás)",
+    "gdp0080": "Egy főre jutó GDP, vásárlóerő-paritás alapján (USD, EU összehasonlítás)",
     # --- Investment (ber — NOT wages!) ---
     "ber0001": "A nemzetgazdasági beruházások hosszú idősoros adatai",
     # --- Health (ege) ---
@@ -1214,6 +1229,7 @@ async def get_ksh_stadat(
         bel0001 — Retail trade (was ksk!)
         kkr0001 — Foreign trade (was kul!)
         nep0001 — Population and vital statistics
+        gdp0017 — Government sector (budget, debt)
         kor0001 — Environment & utilities
         ene0001 — Energy balance
         tur0001 — Tourism
