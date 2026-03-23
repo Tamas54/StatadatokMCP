@@ -35,7 +35,7 @@ import httpx
 import yfinance as yf
 from mnb import Mnb as MnbClient
 from mcp.server.fastmcp import FastMCP
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, Response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("eurostat-ksh-mcp")
@@ -3322,6 +3322,17 @@ LANDING_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta property="og:title" content="Makronóm — Statisztikai Adatok MCP">
+<meta property="og:description" content="Eurostat, KSH, DBnomics, MNB, ECB, FRED — 700M+ adatsor egyetlen MCP szerveren. AI asszisztensek azonnali hozzáférése a világ makrogazdasági adataihoz.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="__BASE_URL__/og-image.svg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Makronóm — Statisztikai Adatok MCP">
+<meta name="twitter:description" content="Eurostat, KSH, DBnomics, MNB, ECB, FRED — 700M+ adatsor egyetlen MCP szerveren.">
+<meta name="twitter:image" content="__BASE_URL__/og-image.svg">
 <title>Makronóm — Statisztikai Adatok MCP</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -3371,11 +3382,12 @@ LANDING_HTML = """<!DOCTYPE html>
   .hero { text-align: center; max-width: 640px; margin-bottom: 3rem; }
   .hero h1 {
     font-size: 2.4rem; font-weight: 800; letter-spacing: -0.03em;
-    background: linear-gradient(135deg, var(--primary), #7cd22d, var(--accent-blue));
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    color: var(--primary);
     margin-bottom: 0.6rem;
   }
   .hero .sub { font-size: 1.05rem; color: var(--text-dim); line-height: 1.7; font-weight: 300; }
+  .nexus-wrap { margin-bottom: 1.5rem; display: flex; justify-content: center; }
+  #globe { display: block; max-width: 100%; height: auto; }
   /* Source badges */
   .sources { display: flex; gap: 0.4rem; flex-wrap: wrap; justify-content: center; margin-top: 1.2rem; }
   .sources span {
@@ -3441,6 +3453,9 @@ LANDING_HTML = """<!DOCTYPE html>
 
 <div class="content">
 <div class="hero">
+  <div class="nexus-wrap">
+    <canvas id="globe"></canvas>
+  </div>
   <h1>Statisztikai Adatok MCP a Makronóm Intézet Kutatóinak</h1>
   <p class="sub">Eurostat, KSH, DBnomics, MNB, ECB és Yahoo Finance adatok elérése<br>
      AI asszisztenseken keresztül — egy kattintással.</p>
@@ -3532,6 +3547,181 @@ function copyConfig(id, btn) {
   btn.dataset.orig = btn.dataset.orig || btn.textContent;
 }
 </script>
+<script>
+(function(){
+var c=document.getElementById('globe'),g=c.getContext('2d'),
+    S=320,R=130,dpr=window.devicePixelRatio||1,PI=Math.PI,RAD=PI/180;
+c.width=S*dpr;c.height=S*dpr;c.style.width=S+'px';c.style.height=S+'px';
+g.scale(dpr,dpr);
+var cx=S/2,cy=S/2,TILT=22*RAD;
+
+var HU=[
+[16.11,46.87],[16.18,46.38],[16.52,46.50],[17.04,45.80],[18.21,45.79],
+[18.90,45.93],[19.73,46.17],[20.26,46.13],[20.78,46.27],[21.14,46.28],
+[21.88,47.03],[22.36,47.52],[22.16,48.40],[21.61,48.50],[20.83,48.58],
+[19.77,48.20],[19.04,48.07],[18.83,48.04],[18.16,47.76],[17.76,47.77],
+[17.15,48.01],[16.95,47.69],[16.42,47.66],[16.11,47.41],[16.11,46.87]
+];
+var DOTS=[
+[2.35,48.86],[13.40,52.52],[-3.70,40.42],[12.50,41.90],[23.72,37.97],
+[14.42,50.08],[21.01,52.23],[18.07,59.33],[24.94,60.17],[-9.14,38.74],
+[4.35,50.85],[4.90,52.37],[16.37,48.21],[14.51,46.06],[15.98,45.81],
+[26.10,44.43],[23.32,42.70],[17.11,48.15],[25.28,54.69],[24.10,56.95],
+[-0.12,51.51],[10.75,59.91],[8.55,47.37],[-6.26,53.35],
+[37.62,55.75],[30.52,50.45],[28.98,41.01],[44.42,33.32],[51.42,35.69],
+[-73.97,40.71],[-43.17,-22.91],[139.69,35.68],[116.40,39.90],[77.21,28.61],
+[-122.42,37.77],[103.82,1.35],[151.21,-33.87],[18.42,-33.93],[36.82,-1.29]
+];
+
+var EUB=[
+[-9.5,37],[-6,36],[0,38],[3,42],[6,43.5],[7.5,44],[10,44],[13,38],[16,37.5],
+[18,40],[21,38],[24,35],[26,38],[28,41],[29,43],[28,46],[27,48],[24,51],
+[23,54],[22,56],[24,57.5],[26,59.5],[28,61],[30,64],[28,68],[24,70],
+[20,69],[16,66],[13,63],[12,58],[10,57.5],[9,55],[7,54],[5,53],[3.5,52],
+[2,51],[-1,48],[-5,48.5],[-9.5,43.5],[-9.5,37]
+];
+
+function P(lon,lat,ry){
+var l=(lon-ry)*RAD,p=lat*RAD,
+    cp=Math.cos(p),sp=Math.sin(p),cl=Math.cos(l),sl=Math.sin(l),
+    ct=Math.cos(TILT),st=Math.sin(TILT),
+    y=sp*ct-cp*cl*st, z=sp*st+cp*cl*ct;
+return[cx+R*cp*sl, cy-R*y, z];
+}
+
+function draw(t){
+var rot=t*0.006;
+g.clearRect(0,0,S,S);
+
+// atmosphere
+var a=g.createRadialGradient(cx,cy,R*.92,cx,cy,R*1.18);
+a.addColorStop(0,'rgba(83,210,45,.06)');a.addColorStop(1,'rgba(83,210,45,0)');
+g.beginPath();g.arc(cx,cy,R*1.18,0,PI*2);g.fillStyle=a;g.fill();
+
+// globe body
+var b=g.createRadialGradient(cx-R*.22,cy-R*.22,R*.08,cx,cy,R);
+b.addColorStop(0,'rgba(20,20,20,1)');b.addColorStop(1,'rgba(6,6,6,1)');
+g.beginPath();g.arc(cx,cy,R,0,PI*2);g.fillStyle=b;g.fill();
+g.strokeStyle='rgba(83,210,45,.1)';g.lineWidth=.8;g.stroke();
+
+// clip to globe
+g.save();g.beginPath();g.arc(cx,cy,R,0,PI*2);g.clip();
+
+// latitude grid
+g.strokeStyle='rgba(83,210,45,.05)';g.lineWidth=.5;
+for(var lat=-60;lat<=60;lat+=30){
+  g.beginPath();var on=0;
+  for(var lon=0;lon<360;lon+=3){
+    var p=P(lon,lat,rot);
+    if(p[2]>0){if(!on){g.moveTo(p[0],p[1]);on=1;}else g.lineTo(p[0],p[1]);}
+    else on=0;
+  }g.stroke();
+}
+// longitude grid
+for(var lon=0;lon<360;lon+=30){
+  g.beginPath();var on=0;
+  for(var lat=-90;lat<=90;lat+=3){
+    var p=P(lon,lat,rot);
+    if(p[2]>0){if(!on){g.moveTo(p[0],p[1]);on=1;}else g.lineTo(p[0],p[1]);}
+    else on=0;
+  }g.stroke();
+}
+
+// EU region
+var ep=EUB.map(function(e){return P(e[0],e[1],rot);});
+var env=0;ep.forEach(function(p){if(p[2]>0)env++;});
+if(env>ep.length*.4){
+  g.beginPath();
+  ep.forEach(function(p,i){i?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]);});
+  g.closePath();
+  g.fillStyle='rgba(59,130,246,.06)';g.fill();
+  g.strokeStyle='rgba(59,130,246,.25)';g.lineWidth=1;
+  g.setLineDash([3,3]);g.stroke();g.setLineDash([]);
+}
+
+// city dots
+for(var i=0;i<DOTS.length;i++){
+  var p=P(DOTS[i][0],DOTS[i][1],rot);
+  if(p[2]>0){
+    var isEU=i<24;
+    g.beginPath();g.arc(p[0],p[1],isEU?1.5:1,0,PI*2);
+    g.fillStyle=isEU?'rgba(59,130,246,.35)':'rgba(255,255,255,.12)';
+    g.fill();
+  }
+}
+
+// orbiting data particles
+g.save();
+g.shadowColor='#53d22d';
+for(var i=0;i<24;i++){
+  var spd=0.012+i*0.004;
+  var plon=(t*spd+i*15)%360;
+  var plat=50*Math.sin(t*0.0005+i*0.7);
+  var pp=P(plon,plat,rot);
+  if(pp[2]>0){
+    var sz=1.5+(i%4)*.5;
+    var op=.4+.4*pp[2];
+    g.shadowBlur=sz*4;
+    g.beginPath();g.arc(pp[0],pp[1],sz,0,PI*2);
+    g.fillStyle='rgba(83,210,45,'+op+')';g.fill();
+  }
+}
+g.restore();
+
+// Hungary
+var hp=HU.map(function(h){return P(h[0],h[1],rot);});
+var nv=0;hp.forEach(function(p){if(p[2]>0)nv++;});
+if(nv>hp.length*.4){
+  g.save();
+  g.shadowColor='#53d22d';g.shadowBlur=30;
+  g.beginPath();
+  hp.forEach(function(p,i){i?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]);});
+  g.closePath();
+  var pulse=.35+.15*Math.sin(t*.002);
+  g.fillStyle='rgba(83,210,45,'+pulse+')';g.fill();
+  g.strokeStyle='rgba(83,210,45,.9)';g.lineWidth=1.5;g.stroke();
+  g.shadowBlur=0;
+
+  // Budapest beacon
+  var bp=P(19.04,47.50,rot);
+  if(bp[2]>0){
+    // outer pulse ring
+    var pr=4+3*Math.sin(t*.003);
+    g.beginPath();g.arc(bp[0],bp[1],pr,0,PI*2);
+    g.strokeStyle='rgba(83,210,45,'+(0.5-pr/14)+')';g.lineWidth=1;g.stroke();
+    // dot
+    g.beginPath();g.arc(bp[0],bp[1],2.5,0,PI*2);
+    g.fillStyle='#53d22d';g.shadowBlur=12;g.shadowColor='#53d22d';g.fill();
+  }
+  g.restore();
+
+  // data beams radiating from Hungary center
+  var hc=P(19.5,47.5,rot);
+  if(hc[2]>0){
+    for(var i=0;i<5;i++){
+      var ang=(i/5)*PI*2+t*.0008;
+      var len=12+8*Math.sin(t*.003+i*1.3);
+      var ex=hc[0]+Math.cos(ang)*len,ey=hc[1]+Math.sin(ang)*len;
+      var lg=g.createLinearGradient(hc[0],hc[1],ex,ey);
+      lg.addColorStop(0,'rgba(83,210,45,.5)');lg.addColorStop(1,'rgba(83,210,45,0)');
+      g.beginPath();g.moveTo(hc[0],hc[1]);g.lineTo(ex,ey);
+      g.strokeStyle=lg;g.lineWidth=1;g.stroke();
+    }
+  }
+}
+
+g.restore(); // unclip
+
+// specular highlight
+var sp=g.createRadialGradient(cx-R*.35,cy-R*.35,0,cx-R*.35,cy-R*.35,R*.6);
+sp.addColorStop(0,'rgba(255,255,255,.04)');sp.addColorStop(1,'rgba(255,255,255,0)');
+g.beginPath();g.arc(cx,cy,R,0,PI*2);g.fillStyle=sp;g.fill();
+
+requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+})();
+</script>
 </body>
 </html>"""
 
@@ -3556,6 +3746,50 @@ else:
     logger.info("KSH STADAT index is fresh — using cached DB")
 
 
+FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+<rect width="32" height="32" rx="6" fill="#050505"/>
+<g transform="translate(16,16)">
+<circle r="12" fill="none" stroke="#53d22d" stroke-width="1" opacity=".3"/>
+<ellipse rx="12" ry="4.5" fill="none" stroke="#53d22d" stroke-width=".7" opacity=".15"/>
+<ellipse rx="4.5" ry="12" fill="none" stroke="#53d22d" stroke-width=".7" opacity=".15"/>
+<circle cx="1" cy="-3" r="3.5" fill="#53d22d" opacity=".8"/>
+</g>
+</svg>"""
+
+OG_IMAGE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+<rect width="1200" height="630" fill="#050505"/>
+<circle cx="600" cy="250" r="220" fill="#53d22d" opacity=".02"/>
+<g transform="translate(600,250)">
+<circle r="170" fill="rgba(10,10,10,.9)" stroke="#53d22d" stroke-width="1.2" opacity=".8"/>
+<ellipse rx="170" ry="40" fill="none" stroke="#53d22d" stroke-width=".7" opacity=".06"/>
+<ellipse rx="170" ry="85" fill="none" stroke="#53d22d" stroke-width=".7" opacity=".06"/>
+<ellipse rx="170" ry="130" fill="none" stroke="#53d22d" stroke-width=".7" opacity=".06"/>
+<ellipse rx="40" ry="170" fill="none" stroke="#53d22d" stroke-width=".7" opacity=".06" transform="rotate(-15)"/>
+<ellipse rx="85" ry="170" fill="none" stroke="#53d22d" stroke-width=".7" opacity=".06" transform="rotate(-15)"/>
+<ellipse rx="130" ry="170" fill="none" stroke="#53d22d" stroke-width=".7" opacity=".06" transform="rotate(-15)"/>
+<circle cx="-50" cy="-25" r="5" fill="#3b82f6" opacity=".3"/>
+<circle cx="-80" cy="-10" r="4" fill="#3b82f6" opacity=".25"/>
+<circle cx="30" cy="-50" r="4" fill="#3b82f6" opacity=".25"/>
+<circle cx="10" cy="-35" r="20" fill="#53d22d" opacity=".12"/>
+<circle cx="10" cy="-35" r="10" fill="#53d22d" opacity=".35"/>
+<circle cx="10" cy="-35" r="4" fill="#53d22d" opacity=".8"/>
+</g>
+<text x="600" y="475" text-anchor="middle" fill="#f0f0f0" font-family="Inter,Arial,sans-serif" font-size="48" font-weight="800" letter-spacing="-1">Makronóm</text>
+<text x="600" y="520" text-anchor="middle" fill="#a0a0a0" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="300">Statisztikai Adatok MCP</text>
+<text x="600" y="568" text-anchor="middle" fill="#53d22d" font-family="Inter,Arial,sans-serif" font-size="14" opacity=".5">Eurostat · KSH · DBnomics · MNB · ECB · FRED · IMF · OECD · Yahoo Finance</text>
+</svg>"""
+
+
+@mcp.custom_route("/favicon.svg", methods=["GET"])
+async def favicon(request):
+    return Response(FAVICON_SVG, media_type="image/svg+xml")
+
+
+@mcp.custom_route("/og-image.svg", methods=["GET"])
+async def og_image(request):
+    return Response(OG_IMAGE_SVG, media_type="image/svg+xml")
+
+
 @mcp.custom_route("/", methods=["GET"])
 async def landing_page(request):
     # Trigger background scan on first page visit if needed
@@ -3563,7 +3797,11 @@ async def landing_page(request):
     if _scan_scheduled and not _ksh_scan_running:
         _scan_scheduled = False
         asyncio.create_task(_scan_ksh_stadat_background())
-    return HTMLResponse(LANDING_HTML)
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("host", request.url.netloc)
+    base_url = f"{scheme}://{host}"
+    html = LANDING_HTML.replace("__BASE_URL__", base_url)
+    return HTMLResponse(html)
 
 
 # ---------------------------------------------------------------------------
