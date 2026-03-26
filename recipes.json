@@ -1,0 +1,643 @@
+[
+  {
+    "id": "policy_rate_PL",
+    "keywords": [
+      "kamat",
+      "kamatláb",
+      "policy rate",
+      "alapkamat",
+      "lengyelország",
+      "poland",
+      "pl",
+      "imf"
+    ],
+    "provider": "IMF",
+    "dataset": "IFS",
+    "dimensions": {
+      "FREQ": "Q",
+      "REF_AREA": "PL",
+      "INDICATOR": "FPOLM_PA"
+    },
+    "note": "IMF IFS — Poland monetary policy rate (quarterly)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "short_rate_HU",
+    "keywords": [
+      "kamat",
+      "rövid",
+      "short rate",
+      "magyarország",
+      "hungary",
+      "hu",
+      "hun",
+      "oecd"
+    ],
+    "provider": "OECD",
+    "dataset": "DP_LIVE",
+    "dimensions": {
+      "LOCATION": "HUN",
+      "INDICATOR": "STINT",
+      "FREQUENCY": "Q"
+    },
+    "note": "OECD — Hungary short-term interest rate (quarterly)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "short_rate_PL",
+    "keywords": [
+      "kamat",
+      "rövid",
+      "short rate",
+      "lengyelország",
+      "poland",
+      "pl",
+      "pol",
+      "oecd"
+    ],
+    "provider": "OECD",
+    "dataset": "DP_LIVE",
+    "dimensions": {
+      "LOCATION": "POL",
+      "INDICATOR": "STINT",
+      "FREQUENCY": "Q"
+    },
+    "note": "OECD — Poland short-term interest rate (quarterly)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "short_rate_EA",
+    "keywords": [
+      "kamat",
+      "rövid",
+      "short rate",
+      "eurozóna",
+      "eurozone",
+      "ea",
+      "ea19",
+      "oecd"
+    ],
+    "provider": "OECD",
+    "dataset": "DP_LIVE",
+    "dimensions": {
+      "LOCATION": "EA19",
+      "INDICATOR": "STINT",
+      "FREQUENCY": "Q"
+    },
+    "note": "OECD — Euro area short-term interest rate (quarterly)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "ecb_main_refi",
+    "keywords": [
+      "kamat",
+      "ecb",
+      "refi",
+      "refinancing",
+      "irányadó",
+      "main",
+      "európai központi bank"
+    ],
+    "provider": "ECB",
+    "dataset": "FM",
+    "series_code": "B.U2.EUR.4F.KR.MRR_FR.LEV",
+    "note": "ECB main refinancing rate (daily)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "wages_SI_gross",
+    "keywords": [
+      "bér",
+      "bruttó",
+      "wages",
+      "gross",
+      "szlovénia",
+      "slovenia",
+      "si",
+      "eurostat"
+    ],
+    "provider": "Eurostat",
+    "dataset": "earn_nt_net",
+    "dimensions": {
+      "geo": "SI",
+      "currency": "EUR",
+      "estruct": "GRS_P1_NCH_AW100"
+    },
+    "note": "Eurostat — Slovenia gross wages (EUR, single earner 100% avg wage)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "wages_EE_gross",
+    "keywords": [
+      "bér",
+      "bruttó",
+      "wages",
+      "gross",
+      "észtország",
+      "estonia",
+      "ee",
+      "eurostat"
+    ],
+    "provider": "Eurostat",
+    "dataset": "earn_nt_net",
+    "dimensions": {
+      "geo": "EE",
+      "currency": "EUR",
+      "estruct": "GRS_P1_NCH_AW100"
+    },
+    "note": "Eurostat — Estonia gross wages (EUR, single earner 100% avg wage)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "wages_SI_net",
+    "keywords": [
+      "bér",
+      "nettó",
+      "wages",
+      "net",
+      "szlovénia",
+      "slovenia",
+      "si",
+      "eurostat"
+    ],
+    "provider": "Eurostat",
+    "dataset": "earn_nt_net",
+    "dimensions": {
+      "geo": "SI",
+      "currency": "EUR",
+      "estruct": "NET_P1_NCH_AW100"
+    },
+    "note": "Eurostat — Slovenia net wages (EUR, single earner 100% avg wage)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "wages_EE_net",
+    "keywords": [
+      "bér",
+      "nettó",
+      "wages",
+      "net",
+      "észtország",
+      "estonia",
+      "ee",
+      "eurostat"
+    ],
+    "provider": "Eurostat",
+    "dataset": "earn_nt_net",
+    "dimensions": {
+      "geo": "EE",
+      "currency": "EUR",
+      "estruct": "NET_P1_NCH_AW100"
+    },
+    "note": "Eurostat — Estonia net wages (EUR, single earner 100% avg wage)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "wages_pps_SI",
+    "keywords": [
+      "bér",
+      "vásárlóerő",
+      "pps",
+      "wages",
+      "purchasing power",
+      "szlovénia",
+      "slovenia",
+      "si"
+    ],
+    "provider": "Eurostat",
+    "dataset": "earn_nt_netft",
+    "dimensions": {
+      "geo": "SI",
+      "estruct": "VAL_A_PPS"
+    },
+    "note": "Eurostat — Slovenia wages in PPS (purchasing power standard)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "wages_pps_EE",
+    "keywords": [
+      "bér",
+      "vásárlóerő",
+      "pps",
+      "wages",
+      "purchasing power",
+      "észtország",
+      "estonia",
+      "ee"
+    ],
+    "provider": "Eurostat",
+    "dataset": "earn_nt_netft",
+    "dimensions": {
+      "geo": "EE",
+      "estruct": "VAL_A_PPS"
+    },
+    "note": "Eurostat — Estonia wages in PPS (purchasing power standard)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "wages_HU_sector",
+    "keywords": [
+      "bér",
+      "ágazat",
+      "szektor",
+      "wages",
+      "sector",
+      "magyarország",
+      "hungary",
+      "ksh"
+    ],
+    "provider": "KSH",
+    "dataset": "mun0183",
+    "tool": "get_ksh_stadat",
+    "note": "KSH STADAT mun0183 — Hungary wages by economic sector (monthly)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "wages_HU_monthly",
+    "keywords": [
+      "bér",
+      "havi",
+      "wages",
+      "monthly",
+      "magyarország",
+      "hungary",
+      "ksh"
+    ],
+    "provider": "KSH",
+    "dataset": "mun0143",
+    "tool": "get_ksh_stadat",
+    "note": "KSH STADAT mun0143 — Hungary monthly wages (institutional data)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "cpi_HU",
+    "keywords": [
+      "infláció",
+      "fogyasztói",
+      "árindex",
+      "cpi",
+      "inflation",
+      "magyarország",
+      "hungary",
+      "ksh"
+    ],
+    "provider": "KSH",
+    "dataset": "ara0001",
+    "tool": "get_ksh_stadat",
+    "note": "KSH STADAT ara0001 — Hungary consumer price index (annual)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "hicp_EA_index",
+    "keywords": [
+      "hicp",
+      "infláció",
+      "inflation",
+      "eurozóna",
+      "eurozone",
+      "ea",
+      "index",
+      "eurostat"
+    ],
+    "provider": "Eurostat",
+    "dataset": "prc_hicp_aind",
+    "dimensions": {
+      "geo": "EA",
+      "coicop": "CP00",
+      "unit": "INX_A_AVG"
+    },
+    "note": "Eurostat — Euro area HICP annual average index (2015=100)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "hicp_annual_rate",
+    "keywords": [
+      "hicp",
+      "infláció",
+      "inflation",
+      "éves",
+      "annual",
+      "rate",
+      "eurostat"
+    ],
+    "provider": "Eurostat",
+    "dataset": "prc_hicp_manr",
+    "dimensions": {
+      "coicop": "CP00"
+    },
+    "note": "Eurostat — HICP annual rate of change (monthly, geo parameterizable)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "eur_huf_current",
+    "keywords": [
+      "árfolyam",
+      "exchange",
+      "eur",
+      "huf",
+      "forint",
+      "aktuális",
+      "current",
+      "mnb",
+      "mai"
+    ],
+    "provider": "MNB",
+    "tool": "mnb_rates",
+    "dimensions": {
+      "currencies": "EUR"
+    },
+    "note": "MNB current official EUR/HUF rate — use mnb_rates(currencies='EUR')",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "eur_huf_historical",
+    "keywords": [
+      "árfolyam",
+      "exchange",
+      "eur",
+      "huf",
+      "forint",
+      "historikus",
+      "historical",
+      "mnb",
+      "múlt"
+    ],
+    "provider": "MNB",
+    "tool": "mnb_rates",
+    "dimensions": {
+      "currencies": "EUR"
+    },
+    "note": "MNB historical EUR/HUF rates — use mnb_rates(mode='historical', start_date=..., end_date=..., currencies='EUR')",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "gdp_HU",
+    "keywords": [
+      "gdp",
+      "magyarország",
+      "hungary",
+      "ksh",
+      "bruttó hazai termék"
+    ],
+    "provider": "KSH",
+    "dataset": "gdp0001",
+    "tool": "get_ksh_stadat",
+    "note": "KSH STADAT gdp0001 — Hungary GDP value and volume change",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "gdp_growth_EU",
+    "keywords": [
+      "gdp",
+      "növekedés",
+      "growth",
+      "eu",
+      "európa",
+      "europe",
+      "eurostat"
+    ],
+    "provider": "Eurostat",
+    "dataset": "namq_10_gdp",
+    "dimensions": {
+      "unit": "CLV_PCH_PRE",
+      "s_adj": "SCA",
+      "na_item": "B1GQ"
+    },
+    "note": "Eurostat namq_10_gdp — EU GDP growth rate (quarterly, seasonally adjusted). Alt: tec00115 for annual overview.",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "bis_rate_ECB",
+    "keywords": [
+      "kamat",
+      "alapkamat",
+      "policy rate",
+      "ecb",
+      "eurozóna",
+      "eurozone",
+      "bis",
+      "jegybanki",
+      "irányadó"
+    ],
+    "provider": "BIS",
+    "dataset": "WS_CBPOL",
+    "dimensions": {
+      "REF_AREA": "XM"
+    },
+    "tool": "get_policy_rates",
+    "note": "ECB irányadó kamat — get_policy_rates(countries='XM')",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "bis_rate_HU",
+    "keywords": [
+      "kamat",
+      "alapkamat",
+      "policy rate",
+      "mnb",
+      "magyarország",
+      "hungary",
+      "bis",
+      "jegybanki"
+    ],
+    "provider": "BIS",
+    "dataset": "WS_CBPOL",
+    "dimensions": {
+      "REF_AREA": "HU"
+    },
+    "tool": "get_policy_rates",
+    "note": "MNB alapkamat — get_policy_rates(countries='HU')",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "bis_rate_V4",
+    "keywords": [
+      "kamat",
+      "alapkamat",
+      "v4",
+      "visegrád",
+      "régió",
+      "összehasonlítás"
+    ],
+    "provider": "BIS",
+    "dataset": "WS_CBPOL",
+    "tool": "get_policy_rates",
+    "note": "V4+ECB kamatok összehasonlítása — get_policy_rates(countries='XM,HU,CZ,PL')",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "bis_rate_region",
+    "keywords": [
+      "kamat",
+      "alapkamat",
+      "régió",
+      "szomszéd",
+      "közép-európa",
+      "cee"
+    ],
+    "provider": "BIS",
+    "dataset": "WS_CBPOL",
+    "tool": "get_policy_rates",
+    "note": "CEE+ECB kamatok — get_policy_rates(countries='XM,HU,CZ,PL,RO,HR')",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "hicp_core_HU",
+    "keywords": [
+      "maginfláció",
+      "core",
+      "inflation",
+      "magyarország",
+      "hungary",
+      "hu",
+      "eurostat"
+    ],
+    "provider": "Eurostat",
+    "dataset": "prc_hicp_manr",
+    "dimensions": {
+      "geo": "HU",
+      "coicop": "TOT_X_NRG_FOOD"
+    },
+    "note": "Eurostat HICP — Hungary core inflation (excl. energy & food, monthly YoY)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "hicp_core_EA",
+    "keywords": [
+      "maginfláció",
+      "core",
+      "inflation",
+      "eurozóna",
+      "eurozone",
+      "ea",
+      "eurostat"
+    ],
+    "provider": "Eurostat",
+    "dataset": "prc_hicp_manr",
+    "dimensions": {
+      "geo": "EA",
+      "coicop": "TOT_X_NRG_FOOD"
+    },
+    "note": "Eurostat HICP — Euro area core inflation (monthly YoY)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "fdi_HU",
+    "keywords": [
+      "fdi",
+      "külföldi",
+      "tőke",
+      "működőtőke",
+      "foreign direct investment",
+      "magyarország",
+      "hungary"
+    ],
+    "provider": "Eurostat",
+    "dataset": "bop_fdi6_flow",
+    "dimensions": {
+      "geo": "HU"
+    },
+    "note": "Eurostat — Hungary FDI flows (inward/outward, annual)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "esi_HU",
+    "keywords": [
+      "esi",
+      "hangulat",
+      "sentiment",
+      "bizalmi",
+      "konjunktúra",
+      "pmi",
+      "magyarország",
+      "hungary"
+    ],
+    "provider": "Eurostat",
+    "dataset": "ei_bssi_m_r2",
+    "dimensions": {
+      "geo": "HU",
+      "indic": "BS-ESI-I"
+    },
+    "note": "Eurostat ESI — Hungary Economic Sentiment Indicator (PMI alternatíva, havi)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "esi_EA",
+    "keywords": [
+      "esi",
+      "hangulat",
+      "sentiment",
+      "bizalmi",
+      "konjunktúra",
+      "pmi",
+      "eurozóna",
+      "eurozone"
+    ],
+    "provider": "Eurostat",
+    "dataset": "ei_bssi_m_r2",
+    "dimensions": {
+      "geo": "EA",
+      "indic": "BS-ESI-I"
+    },
+    "note": "Eurostat ESI — Euro area Economic Sentiment Indicator (havi)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  }
+]

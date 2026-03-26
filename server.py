@@ -4,7 +4,7 @@ Eurostat + KSH + DBnomics MCP Server
 Unified MCP connector for European, Hungarian, and global statistical data.
 Deployable on Railway with Streamable HTTP transport.
 
-13 Tools:
+14 Tools:
   - search_datasets: Search Eurostat, KSH, and/or DBnomics datasets by keyword
   - get_eurostat_data: Fetch data from Eurostat (JSON-stat API)
   - dbnomics_search: Search datasets across DBnomics + list providers (mode="providers")
@@ -18,6 +18,8 @@ Deployable on Railway with Streamable HTTP transport.
   - forecast: Macro forecasts (GDP, inflation, unemployment) + OECD CLI (indicator="oecd_cli")
   - get_fred_data: FRED US economic data
   - get_economic_calendar: Upcoming data releases (FRED, ECB, Eurostat)
+  - get_policy_rates: Central bank policy rates (BIS) — ECB, MNB, CNB, NBP, BNR, etc.
+  Sub-tool: get_eurostat_data(dataset_code="COMEXT") — Eurostat COMEXT HS-level commodity trade
 """
 
 import asyncio
@@ -432,6 +434,92 @@ async def _load_ksh_datasets() -> list[dict]:
 # ---------------------------------------------------------------------------
 # DBnomics helpers
 # ---------------------------------------------------------------------------
+async def _fetch_comext(reporter: str, filters: str) -> str:
+    """Eurostat trade data handler — SITC-level via ext_lt_intertrd.
+
+    Note: HS-level COMEXT (DS-016890) is NOT available via API, only via
+    the Easy Comext web interface. This handler uses ext_lt_intertrd which
+    provides SITC-classified trade indices and values.
+    """
+    # Parse filters for partner, sitc code
+    partner = ""
+    sitc = ""
+    since = "2020"
+    if filters:
+        for part in filters.split("&"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                k = k.strip().lower()
+                if k in ("partner", "partner_code"):
+                    partner = v.strip()
+                elif k in ("product", "sitc", "sitc06"):
+                    sitc = v.strip()
+                elif k in ("since", "period"):
+                    since = v.strip()
+
+    # Use the standard Eurostat JSON-stat API with ext_lt_intertrd
+    url = f"{EUROSTAT_STAT}/ext_lt_intertrd"
+    req_url = f"{url}?lang=EN"
+    for g in reporter.upper().split(","):
+        req_url += f"&geo={g.strip()}"
+    if partner:
+        for p in partner.split(","):
+            req_url += f"&partner={p.strip()}"
+    if sitc:
+        req_url += f"&sitc06={sitc}"
+    if since:
+        req_url += f"&sinceTimePeriod={since}"
+
+    client = await get_client()
+    try:
+        resp = await client.get(req_url, timeout=60.0)
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPStatusError as e:
+        return json.dumps({
+            "error": f"Eurostat trade: {e.response.status_code}",
+            "hint": "Use SITC codes (e.g. sitc06=05 for vegetables, 33 for petroleum). "
+                    "For HS-level product codes (e.g. 0701 potatoes), use Easy Comext web: "
+                    "ec.europa.eu/eurostat/comext/newxtweb/",
+            "url": str(e.request.url),
+        }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": f"Trade data request failed: {e}"}, ensure_ascii=False)
+
+    # Parse same as regular Eurostat JSON-stat
+    values = data.get("value", {})
+    if not values:
+        return json.dumps({
+            "info": "No data found",
+            "dataset": "ext_lt_intertrd",
+            "reporter": reporter,
+            "hint": "Dataset provides SITC-classified trade. For HS product codes, "
+                    "use Easy Comext: ec.europa.eu/eurostat/comext/newxtweb/",
+        }, ensure_ascii=False, indent=2)
+
+    dims = data.get("dimension", {})
+    dim_ids = data.get("id", list(dims.keys()))
+
+    # Extract time labels
+    time_dim = dims.get("time", {})
+    time_labels = list(time_dim.get("category", {}).get("index", {}).keys()) if "category" in time_dim else []
+
+    # Extract indicator labels
+    indic_dim = dims.get("indic_et", {})
+    indic_labels = indic_dim.get("category", {}).get("label", {}) if "category" in indic_dim else {}
+
+    return json.dumps({
+        "source": "Eurostat ext_lt_intertrd (SITC trade indices)",
+        "reporter": reporter,
+        "note": "SITC-level trade. For HS product codes (0701, 2709), use Easy Comext web.",
+        "data_points": len(values),
+        "dimensions": dim_ids,
+        "periods": time_labels[-12:] if time_labels else [],
+        "indicators": indic_labels,
+        "values_sample": {k: v for i, (k, v) in enumerate(values.items()) if i < 50},
+    }, ensure_ascii=False, indent=2)
+
+
 DBNOMICS_BASE = "https://api.db.nomics.world/v22"
 _dbnomics_providers_cache: list[dict] = []
 _dbnomics_providers_loaded_at: float = 0.0
@@ -593,17 +681,25 @@ async def get_eurostat_data(
     """Fetch data from Eurostat's JSON-stat API.
 
     Args:
-        dataset_code: Eurostat dataset code (e.g. "nama_10_gdp", "prc_hicp_manr")
-        geo: Country/region filter - comma-separated codes (e.g. "HU,DE,EU27_2020")
+        dataset_code: Eurostat dataset code (e.g. "nama_10_gdp", "prc_hicp_manr").
+                      Special: "COMEXT" for HS-level commodity trade data (import/export).
+        geo: Country/region filter - comma-separated codes (e.g. "HU,DE,EU27_2020").
+             For COMEXT: reporter country (e.g. "HU").
         time: Time period filter for specific years (e.g. "2023", "2020,2021,2022")
         sinceTimePeriod: Start of time range (e.g. "2002-01", "2002"). Use with untilTimePeriod for ranges.
         untilTimePeriod: End of time range (e.g. "2008-12", "2008"). Use with sinceTimePeriod for ranges.
-        filters: Additional dimension filters as "KEY=VAL&KEY2=VAL2" (e.g. "unit=CP_MEUR&na_item=B1GQ")
+        filters: Additional dimension filters as "KEY=VAL&KEY2=VAL2" (e.g. "unit=CP_MEUR&na_item=B1GQ").
+                 For COMEXT: "sitc=05&partner=DE&since=2020" (SITC code + partner + period).
+                 SITC codes: 05=vegetables/fruit, 33=petroleum, 78=road vehicles, 67=iron/steel.
         lang: Language - EN, FR, or DE (default: EN)
 
     Returns:
         JSON with parsed data table. Use search_datasets first to find dataset codes.
     """
+    # --- COMEXT mode: Eurostat HS-level commodity trade ---
+    if dataset_code.upper() in ("COMEXT", "DS-016890") or dataset_code.startswith("DS-"):
+        return await _fetch_comext(geo or "HU", filters)
+
     url = f"{EUROSTAT_STAT}/{dataset_code}"
     client = await get_client()
     try:
@@ -1014,6 +1110,27 @@ async def dbnomics_series(
 
         series_list = data.get("series", {}).get("docs", [])
         num_found = data.get("series", {}).get("num_found", 0)
+
+        # Auto-retry with UPPERCASE dataset code (many Eurostat datasets need this on DBnomics)
+        if num_found == 0 and dataset_code != dataset_code.upper():
+            upper_ds = dataset_code.upper()
+            logger.info(f"DBnomics: 0 results for '{dataset_code}', retrying with '{upper_ds}'")
+            if series_code:
+                retry_url = f"{DBNOMICS_BASE}/series"
+                retry_params = dict(params)
+                retry_params["series_ids"] = f"{provider_code}/{upper_ds}/{series_code}"
+            else:
+                retry_url = f"{DBNOMICS_BASE}/series/{provider_code}/{upper_ds}"
+                retry_params = dict(params)
+            retry_resp = await client.get(retry_url, params=retry_params)
+            if retry_resp.status_code == 200:
+                retry_data = retry_resp.json()
+                retry_found = retry_data.get("series", {}).get("num_found", 0)
+                if retry_found > 0:
+                    data = retry_data
+                    series_list = data["series"]["docs"]
+                    num_found = retry_found
+                    dataset_code = upper_ds
 
         results = []
         for s in series_list[:limit]:
@@ -1576,8 +1693,9 @@ async def get_ksh_stadat(
 
     Common table codes:
         ara0001 — Consumer price index (annual)
-        ara0004 — Core inflation
+        ara0004 — Product/service average prices (NOT core inflation)
         ara0039 — CPI detailed monthly
+        ara0045 — Core inflation (maginfláció, havi, szezonálisan kiigazított)
         gdp0001 — GDP value and volume change
         gdp0005 — GDP per capita
         mun0001 — Labor market summary (employment, unemployment)
@@ -2085,6 +2203,19 @@ _SEED_RECIPES: list[dict] = [
     # --- GDP ---
     {"id": "gdp_HU", "keywords": ["gdp", "magyarország", "hungary", "ksh", "bruttó hazai termék"], "provider": "KSH", "dataset": "gdp0001", "tool": "get_ksh_stadat", "note": "KSH STADAT gdp0001 — Hungary GDP value and volume change"},
     {"id": "gdp_growth_EU", "keywords": ["gdp", "növekedés", "growth", "eu", "európa", "europe", "eurostat"], "provider": "Eurostat", "dataset": "namq_10_gdp", "dimensions": {"unit": "CLV_PCH_PRE", "s_adj": "SCA", "na_item": "B1GQ"}, "note": "Eurostat namq_10_gdp — EU GDP growth rate (quarterly, seasonally adjusted). Alt: tec00115 for annual overview."},
+    # --- JEGYBANKI ALAPKAMATOK / POLICY RATES (BIS) ---
+    {"id": "bis_rate_ECB", "keywords": ["kamat", "alapkamat", "policy rate", "ecb", "eurozóna", "eurozone", "bis", "jegybanki", "irányadó"], "provider": "BIS", "dataset": "WS_CBPOL", "dimensions": {"REF_AREA": "XM"}, "tool": "get_policy_rates", "note": "ECB irányadó kamat — get_policy_rates(countries='XM')"},
+    {"id": "bis_rate_HU", "keywords": ["kamat", "alapkamat", "policy rate", "mnb", "magyarország", "hungary", "bis", "jegybanki"], "provider": "BIS", "dataset": "WS_CBPOL", "dimensions": {"REF_AREA": "HU"}, "tool": "get_policy_rates", "note": "MNB alapkamat — get_policy_rates(countries='HU')"},
+    {"id": "bis_rate_V4", "keywords": ["kamat", "alapkamat", "v4", "visegrád", "régió", "összehasonlítás"], "provider": "BIS", "dataset": "WS_CBPOL", "tool": "get_policy_rates", "note": "V4+ECB kamatok összehasonlítása — get_policy_rates(countries='XM,HU,CZ,PL')"},
+    {"id": "bis_rate_region", "keywords": ["kamat", "alapkamat", "régió", "szomszéd", "közép-európa", "cee"], "provider": "BIS", "dataset": "WS_CBPOL", "tool": "get_policy_rates", "note": "CEE+ECB kamatok — get_policy_rates(countries='XM,HU,CZ,PL,RO,HR')"},
+    # --- MAGINFLÁCIÓ / CORE INFLATION (Eurostat) ---
+    {"id": "hicp_core_HU", "keywords": ["maginfláció", "core", "inflation", "magyarország", "hungary", "hu", "eurostat"], "provider": "Eurostat", "dataset": "prc_hicp_manr", "dimensions": {"geo": "HU", "coicop": "TOT_X_NRG_FOOD"}, "note": "Eurostat HICP — Hungary core inflation (excl. energy & food, monthly YoY)"},
+    {"id": "hicp_core_EA", "keywords": ["maginfláció", "core", "inflation", "eurozóna", "eurozone", "ea", "eurostat"], "provider": "Eurostat", "dataset": "prc_hicp_manr", "dimensions": {"geo": "EA", "coicop": "TOT_X_NRG_FOOD"}, "note": "Eurostat HICP — Euro area core inflation (monthly YoY)"},
+    # --- FDI ---
+    {"id": "fdi_HU", "keywords": ["fdi", "külföldi", "tőke", "működőtőke", "foreign direct investment", "magyarország", "hungary"], "provider": "Eurostat", "dataset": "bop_fdi6_flow", "dimensions": {"geo": "HU"}, "note": "Eurostat — Hungary FDI flows (inward/outward, annual)"},
+    # --- ESI (PMI alternatíva) ---
+    {"id": "esi_HU", "keywords": ["esi", "hangulat", "sentiment", "bizalmi", "konjunktúra", "pmi", "magyarország", "hungary"], "provider": "Eurostat", "dataset": "ei_bssi_m_r2", "dimensions": {"geo": "HU", "indic": "BS-ESI-I"}, "note": "Eurostat ESI — Hungary Economic Sentiment Indicator (PMI alternatíva, havi)"},
+    {"id": "esi_EA", "keywords": ["esi", "hangulat", "sentiment", "bizalmi", "konjunktúra", "pmi", "eurozóna", "eurozone"], "provider": "Eurostat", "dataset": "ei_bssi_m_r2", "dimensions": {"geo": "EA", "indic": "BS-ESI-I"}, "note": "Eurostat ESI — Euro area Economic Sentiment Indicator (havi)"},
 ]
 
 
@@ -3315,6 +3446,81 @@ def get_economic_calendar(
 
 
 # ---------------------------------------------------------------------------
+# Central bank policy rates (BIS via DBnomics)
+# ---------------------------------------------------------------------------
+@mcp.tool()
+async def get_policy_rates(
+    countries: str = "XM,HU,CZ,PL,RO",
+    frequency: str = "M",
+    limit: int = 12,
+) -> str:
+    """Fetch central bank policy rates from BIS via DBnomics.
+
+    Current and historical monetary policy rates for central banks worldwide.
+    Data from the Bank for International Settlements (BIS) WS_CBPOL dataset.
+
+    Args:
+        countries: Comma-separated BIS country codes (default: "XM,HU,CZ,PL,RO").
+                   XM=Euro area (ECB), HU=Hungary (MNB), CZ=Czechia (CNB),
+                   PL=Poland (NBP), RO=Romania (BNR).
+                   Other codes: US, GB, JP, CH, SE, NO, DK, AU, CA, TR, etc.
+        frequency: "M" for monthly (default), "D" for daily
+        limit: Number of recent observations per country (default: 12)
+
+    Returns:
+        JSON with current policy rates and recent history per country.
+    """
+    codes = [c.strip().upper() for c in countries.split(",") if c.strip()]
+    dims = json.dumps({"FREQ": [frequency.upper()], "REF_AREA": codes})
+    client = await get_client()
+    url = f"{DBNOMICS_BASE}/series/BIS/WS_CBPOL"
+    params = {"dimensions": dims, "observations": "1", "format": "json", "limit": 200}
+
+    try:
+        resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        return json.dumps({"error": f"BIS API error: {e}"}, ensure_ascii=False)
+
+    series_list = data.get("series", {}).get("docs", [])
+    results = {}
+    for s in series_list:
+        code = s.get("series_code", "")
+        ref_area = code.split(".")[1] if "." in code else code
+        periods = s.get("period", [])
+        values = s.get("value", [])
+        obs = [{"period": p, "rate": v} for p, v in zip(periods, values) if v is not None]
+        obs = obs[-limit:]
+        if obs:
+            results[ref_area] = {
+                "current_rate": obs[-1]["rate"],
+                "as_of": obs[-1]["period"],
+                "history": obs,
+            }
+
+    # Country name mapping
+    names = {"XM": "Euro area (ECB)", "HU": "Hungary (MNB)", "CZ": "Czechia (CNB)",
+             "PL": "Poland (NBP)", "RO": "Romania (BNR)", "US": "USA (Fed)",
+             "GB": "UK (BoE)", "JP": "Japan (BoJ)", "CH": "Switzerland (SNB)",
+             "SE": "Sweden (Riksbank)", "NO": "Norway (Norges)", "DK": "Denmark (DNB)",
+             "TR": "Turkey (TCMB)", "HR": "Croatia (HNB)"}
+
+    summary = []
+    for code in codes:
+        if code in results:
+            r = results[code]
+            name = names.get(code, code)
+            summary.append(f"{name}: {r['current_rate']}% ({r['as_of']})")
+
+    return json.dumps({
+        "source": "BIS WS_CBPOL via DBnomics",
+        "summary": summary,
+        "rates": results,
+    }, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Landing page
 # ---------------------------------------------------------------------------
 LANDING_HTML = """<!DOCTYPE html>
@@ -3470,6 +3676,8 @@ LANDING_HTML = """<!DOCTYPE html>
     <span>OECD</span>
     <span>World Bank</span>
     <span>Yahoo Finance</span>
+    <span>BIS</span>
+    <span>COMEXT</span>
   </div>
 </div>
 
@@ -3526,6 +3734,8 @@ LANDING_HTML = """<!DOCTYPE html>
     <tr><td>forecast</td><td>Prognózis — GDP, infláció, munkanélküliség, OECD CLI (52 ország, negyedéves)</td></tr>
     <tr><td>get_fred_data</td><td>FRED — 800K+ US gazdasági idősor (kamatok, infláció, GDP, munkaerő…)</td></tr>
     <tr><td>get_economic_calendar</td><td>Gazdasági naptár — közelgő adatközlések (FRED, ECB, Eurostat)</td></tr>
+    <tr><td>get_policy_rates</td><td>Jegybanki alapkamatok — BIS (ECB, MNB, CNB, NBP, BNR, Fed…)</td></tr>
+    <tr><td>get_eurostat_data</td><td>↳ COMEXT mód: dataset_code="COMEXT" — SITC külkereskedelem (HS-hez: Easy Comext web)</td></tr>
   </table>
 </div>
 
