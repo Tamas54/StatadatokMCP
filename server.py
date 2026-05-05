@@ -1785,6 +1785,29 @@ def _parse_ksh_csv(text: str, max_rows: int = 500) -> dict:
     if truncated:
         rows = rows[-max_rows:]  # keep the freshest
 
+    # Forward-fill the year column. KSH monthly CSVs leave "Év" blank after
+    # the first month of each year (e.g. only Jan has "2026", Feb-Dec are
+    # ''). Sub-agents reading the JSON couldn't track which year a given
+    # month belonged to, and consistently misread the freshest 2026 rows
+    # as 2024-era data. Fill it forward so each row stands on its own.
+    # Heuristic: any column whose name contains "Év" (or its lowercase
+    # variants) gets the carry-forward treatment. (2026-05-05 audit fix.)
+    year_cols = [c for c in headers if c and ("Év" in c or "év" in c.lower())]
+    for col in year_cols:
+        last_val = None
+        for r in rows:
+            v = r.get(col)
+            if v in (None, "", 0):
+                if last_val is not None:
+                    r[col] = last_val
+            else:
+                last_val = v
+
+    # Reverse to DESC by row order (KSH files are ASC by time). With the
+    # year column now populated everywhere, sub-agents see the freshest
+    # months at the TOP of the data array.
+    rows = list(reversed(rows))
+
     return {
         "title": title,
         "columns": headers,
