@@ -736,6 +736,19 @@ async def get_eurostat_data(
         parsed["dataset"] = dataset_code
         parsed["url"] = req_url
 
+        # If the result is truncated and the caller didn't filter, surface a
+        # narrowing hint with the available dimension keys so sub-agents know
+        # how to drill in. (2026-05-05 audit fix.)
+        if parsed.get("truncated") and not filters:
+            dim_keys = list((parsed.get("dimensions") or {}).keys())
+            non_geo_time = [k for k in dim_keys if k.lower() not in ("geo", "time", "freq")]
+            parsed["truncation_hint"] = (
+                f"Result truncated to first 500 rows. To narrow down, pass "
+                f"filters='dim1=value1&dim2=value2' using these dimension keys: "
+                f"{', '.join(non_geo_time) or 'see dataset on eurostat.eu'}. "
+                f"For example, GDP queries usually need filters='na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA'."
+            )
+
         # Auto-learn: save Eurostat queries with geo/filters as recipes
         if geo or filters:
             try:
@@ -992,9 +1005,43 @@ async def dbnomics_search(
 
     # --- SEARCH MODE (default) ---
     if not query:
+        # If a provider is specified but query is empty, list the provider's datasets
+        # via /v22/datasets/{PROVIDER}. Useful when sub-agents want to discover
+        # what's available under e.g. ECB before drilling in. (2026-05-05 audit fix.)
+        if provider:
+            client = await get_client()
+            provider_upper = provider.upper()
+            try:
+                url = f"{DBNOMICS_BASE}/datasets/{provider_upper}"
+                resp = await client.get(url, params={"limit": min(limit, 100), "offset": 0})
+                resp.raise_for_status()
+                data = resp.json()
+                docs = (data.get("datasets") or {}).get("docs", [])
+                results = []
+                for d in docs[:limit]:
+                    results.append({
+                        "dataset_code": d.get("code", ""),
+                        "dataset_name": d.get("name", "") or d.get("code", ""),
+                        "nb_series": d.get("nb_series", 0),
+                        "dimensions": list((d.get("dimensions_labels") or {}).keys()),
+                    })
+                return json.dumps({
+                    "provider": provider_upper,
+                    "total_returned": len(results),
+                    "datasets": results,
+                    "usage_hint": "Use dbnomics_series(provider_code, dataset_code) to fetch data, or dbnomics_search(query=..., provider=...) to filter by keyword.",
+                }, ensure_ascii=False, indent=2)
+            except httpx.HTTPStatusError as e:
+                return json.dumps({
+                    "error": f"DBnomics provider '{provider_upper}' not found or has no datasets (HTTP {e.response.status_code})",
+                    "hint": "Use dbnomics_search(mode='providers') to list valid provider codes.",
+                }, ensure_ascii=False, indent=2)
+            except Exception as e:
+                return json.dumps({"error": f"DBnomics provider listing failed: {e}"}, ensure_ascii=False, indent=2)
+
         return json.dumps({
             "error": "Please provide a search query",
-            "hint": "Examples: dbnomics_search(query='GDP per capita'), dbnomics_search(mode='providers')",
+            "hint": "Examples: dbnomics_search(query='GDP per capita'), dbnomics_search(provider='ECB') to list ECB datasets, dbnomics_search(mode='providers') for the provider catalog.",
         }, ensure_ascii=False, indent=2)
 
     limit = min(limit, 50)
@@ -3635,9 +3682,78 @@ async def get_policy_rates(
         "summary": summary,
         "rates": results,
     }
+
+    # If any country's BIS data is stale, augment with Eurostat irt_st_m
+    # (Day-to-day money market rate) as a fresh proxy. The Eurostat money
+    # market rate tracks the central bank policy rate within ~10 bps for
+    # the CEE economies (HU/CZ/PL/RO) and the Nordics — it's the best
+    # available signal when BIS lags by 6+ months. (2026-05-05 audit fix.)
+    stale_codes = [c for c in codes if results.get(c, {}).get("stale")]
+    if stale_codes:
+        try:
+            proxy = await _fetch_eurostat_policy_proxy(stale_codes)
+            if proxy:
+                out["eurostat_proxy"] = {
+                    "note": (
+                        "BIS WS_CBPOL data above is stale. The values below are "
+                        "the Day-to-day money market rate from Eurostat irt_st_m, "
+                        "which tracks the central bank policy rate within ~10 bps "
+                        "for HU/CZ/PL/RO/Nordics. NOT identical to the policy "
+                        "rate but is the best fresh proxy. Euro area, US, JP, "
+                        "and other non-EEA countries are NOT covered by Eurostat."
+                    ),
+                    "rates": proxy,
+                }
+        except Exception as e:
+            logger.warning("Eurostat policy_proxy fallback failed: %s", e)
+
     if notes:
         out["staleness_notes"] = notes
     return json.dumps(out, ensure_ascii=False, indent=2)
+
+
+async def _fetch_eurostat_policy_proxy(country_codes: list[str]) -> dict:
+    """Fetch Eurostat irt_st_m Day-to-day money market rate as a fresh proxy
+    for central bank policy rates. Eurostat covers CEE + Nordics + UK only —
+    NOT euro area aggregate, US, JP, EM. Called from get_policy_rates when
+    the BIS WS_CBPOL data is stale.
+    """
+    eurostat_supported = {"HU", "CZ", "PL", "RO", "DK", "SE", "NO", "GB"}
+    targets = [c for c in country_codes if c in eurostat_supported]
+    if not targets:
+        return {}
+
+    proxy_out: dict = {}
+    client = await get_client()
+    for c in targets:
+        try:
+            req_url = f"{EUROSTAT_STAT}/irt_st_m?lang=EN&geo={c}&sinceTimePeriod=2025-01"
+            resp = await client.get(req_url, timeout=15.0)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            if "warning" in data:
+                continue
+            parsed = _parse_json_stat(data)
+            rows = parsed.get("data") or []
+            if not rows:
+                continue
+            # Prefer "Day-to-day" interest rate; fallback to whatever is there.
+            d2d = [r for r in rows
+                   if str(r.get("Interest rate", "")).lower().startswith("day-to-day")]
+            picked = d2d if d2d else rows
+            picked.sort(key=lambda r: str(r.get("Time", "")), reverse=True)
+            latest = picked[0]
+            proxy_out[c] = {
+                "value": latest.get("value"),
+                "period": latest.get("Time"),
+                "rate_type": latest.get("Interest rate", ""),
+                "source": "Eurostat irt_st_m (Day-to-day money market rate)",
+            }
+        except Exception as e:
+            logger.warning("Eurostat proxy fetch failed for %s: %s", c, e)
+            continue
+    return proxy_out
 
 
 # ---------------------------------------------------------------------------
