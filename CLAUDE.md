@@ -14,3 +14,14 @@
 | #9787 | " | 🔄 | Moved yfinance import to top-level imports section | ~243 |
 | #9786 | " | 🔄 | Moved yfinance import to top of file with other imports | ~273 |
 </claude-mem-context>
+
+# StatData MCP
+
+This repo is the **StatData MCP** server (formerly "Eurostat-KSH-DBnomics" / "Makronóm").
+
+- FastMCP server name: `StatData`
+- Logger: `statdata`
+- Railway service: `statdata` (dashboard name; URL unchanged at `https://makronommcp-production.up.railway.app`)
+- 14 tools (search_datasets, get_eurostat_data, dbnomics_search/series, get_ksh_stadat/hvd, yfinance, mnb_rates, calculate, recipe_book, forecast, get_fred_data, get_economic_calendar, get_policy_rates)
+
+The 14 tools are also pass-through-exposed via the Claus Bridge MCP (`~/Claus/claus-bridge-mcp/`) as `statdata_*` tools, plus a `data_context` parameter on `ai_query`/`ai_task` for preset injection (`hu_macro`, `us_macro`, `eu_macro`, `markets`, `tech_stocks`, `commodities`, `fx_majors`, `bonds`, `inflation_focus`, `emerging_markets`).

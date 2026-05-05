@@ -1,7 +1,8 @@
 """
-Eurostat + KSH + DBnomics MCP Server
+StatData MCP Server
 ======================================
-Unified MCP connector for European, Hungarian, and global statistical data.
+Unified MCP connector for European, Hungarian, and global statistical data
+(Eurostat, KSH, DBnomics, MNB, FRED, BIS, Yahoo Finance).
 Deployable on Railway with Streamable HTTP transport.
 
 14 Tools:
@@ -40,13 +41,13 @@ from mcp.server.fastmcp import FastMCP
 from starlette.responses import HTMLResponse, Response
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("eurostat-ksh-mcp")
+logger = logging.getLogger("statdata")
 
 # ---------------------------------------------------------------------------
 # Server setup
 # ---------------------------------------------------------------------------
 mcp = FastMCP(
-    "Eurostat-KSH-DBnomics",
+    "StatData",
     stateless_http=True,
     json_response=True,
     host="0.0.0.0",
@@ -3529,17 +3530,17 @@ LANDING_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<meta property="og:title" content="Makronóm — Statisztikai Adatok MCP">
+<meta property="og:title" content="StatData — Statisztikai Adatok MCP">
 <meta property="og:description" content="Eurostat, KSH, DBnomics, MNB, ECB, FRED — 700M+ adatsor egyetlen MCP szerveren. AI asszisztensek azonnali hozzáférése a világ makrogazdasági adataihoz.">
 <meta property="og:type" content="website">
 <meta property="og:image" content="__BASE_URL__/og-image.svg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Makronóm — Statisztikai Adatok MCP">
+<meta name="twitter:title" content="StatData — Statisztikai Adatok MCP">
 <meta name="twitter:description" content="Eurostat, KSH, DBnomics, MNB, ECB, FRED — 700M+ adatsor egyetlen MCP szerveren.">
 <meta name="twitter:image" content="__BASE_URL__/og-image.svg">
-<title>Makronóm — Statisztikai Adatok MCP</title>
+<title>StatData — Statisztikai Adatok MCP</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -3662,7 +3663,7 @@ LANDING_HTML = """<!DOCTYPE html>
   <div class="nexus-wrap">
     <canvas id="globe"></canvas>
   </div>
-  <h1>Statisztikai Adatok MCP a Makronóm Intézet Kutatóinak</h1>
+  <h1>StatData — Statisztikai Adatok MCP</h1>
   <p class="sub">Eurostat, KSH, DBnomics, MNB, ECB és Yahoo Finance adatok elérése<br>
      AI asszisztenseken keresztül — egy kattintással.</p>
   <div class="sources">
@@ -3739,7 +3740,7 @@ LANDING_HTML = """<!DOCTYPE html>
   </table>
 </div>
 
-<footer>Makronóm Intézet</footer>
+<footer>StatData</footer>
 </div>
 
 <script>
@@ -3984,7 +3985,7 @@ OG_IMAGE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="6
 <circle cx="10" cy="-35" r="10" fill="#53d22d" opacity=".35"/>
 <circle cx="10" cy="-35" r="4" fill="#53d22d" opacity=".8"/>
 </g>
-<text x="600" y="475" text-anchor="middle" fill="#f0f0f0" font-family="Inter,Arial,sans-serif" font-size="48" font-weight="800" letter-spacing="-1">Makronóm</text>
+<text x="600" y="475" text-anchor="middle" fill="#f0f0f0" font-family="Inter,Arial,sans-serif" font-size="48" font-weight="800" letter-spacing="-1">StatData</text>
 <text x="600" y="520" text-anchor="middle" fill="#a0a0a0" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="300">Statisztikai Adatok MCP</text>
 <text x="600" y="568" text-anchor="middle" fill="#53d22d" font-family="Inter,Arial,sans-serif" font-size="14" opacity=".5">Eurostat · KSH · DBnomics · MNB · ECB · FRED · IMF · OECD · Yahoo Finance</text>
 </svg>"""

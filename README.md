@@ -1,6 +1,6 @@
-# Statisztikai Adatok MCP
+# StatData MCP
 
-Unified MCP connector for **Eurostat** (EU statistics), **KSH** (Hungarian Central Statistical Office), **DBnomics** (700M+ series from 70+ global providers: IMF, ECB, OECD, World Bank, etc.), and **Yahoo Finance** (stocks, forex, commodities, indices).
+Unified MCP connector for **Eurostat** (EU statistics), **KSH** (Hungarian Central Statistical Office), **DBnomics** (700M+ series from 70+ global providers: IMF, ECB, OECD, World Bank, etc.), **MNB** (Hungarian National Bank), **FRED** (US Federal Reserve), **BIS** (policy rates), and **Yahoo Finance** (stocks, forex, commodities, indices).
 
 ## Tools
 
@@ -35,7 +35,7 @@ python server.py
 ```json
 {
   "mcpServers": {
-    "statisztika": {
+    "statdata": {
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://YOUR-URL/mcp"]
     }
