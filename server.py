@@ -290,7 +290,33 @@ def _parse_json_stat(data: dict) -> dict:
     dimension_info = data.get("dimension", {})
     values = data.get("value", {})
 
-    if not dims or not values:
+    if not dims:
+        return {"error": "Empty or unrecognized JSON-stat response", "raw_keys": list(data.keys())}
+
+    # Distinguish "empty result for these filters" from "broken response".
+    # Eurostat returns a valid JSON-stat envelope with empty value{} when the
+    # filters don't match any observation (e.g. irt_h_eurcoe_d with geo=HU
+    # since this dataset only carries euro area data). Surface that clearly
+    # so sub-agents know to relax filters rather than blame the parser.
+    # (2026-05-05 audit fix.)
+    if not values:
+        zero_dims = []
+        for d, s in zip(dims, sizes):
+            if s == 0:
+                zero_dims.append(d)
+        if zero_dims:
+            return {
+                "error": "No data matches the requested filters",
+                "empty_dimensions": zero_dims,
+                "applied_filters": {d: dimension_info.get(d, {}).get("label", d) for d in dims},
+                "hint": (
+                    f"Dataset returned 0 observations because dimension(s) {zero_dims} "
+                    f"have no values under the current filter. Common cause: this dataset "
+                    f"only covers certain geos (e.g. ECB datasets like irt_h_eurcoe_d only "
+                    f"have euro area aggregate). Try removing the geo filter or using 'EA'/'EU27_2020'."
+                ),
+                "raw_keys": list(data.keys()),
+            }
         return {"error": "Empty or unrecognized JSON-stat response", "raw_keys": list(data.keys())}
 
     # Build dimension labels
@@ -1590,6 +1616,27 @@ def _parse_ksh_csv(text: str, max_rows: int = 500) -> dict:
     """
     # Clean up Windows line endings
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # KSH multi-row header bug fix (2026-05-05 audit):
+    # Some KSH CSVs (e.g. gdp0002, anything with long column descriptions)
+    # embed newlines INSIDE quoted column names, e.g.:
+    #     Év;Bruttó hazai termék;"Végső fogyasztás összesen,
+    #     1960 = 100%";"Bruttó felhalmozás...
+    # Splitting on "\n" tears these apart and the multi-row-header merge
+    # logic below then concatenates header text into the wrong columns.
+    # Pre-flatten newlines that fall INSIDE a quoted region into spaces.
+    _out = []
+    _in_quote = False
+    for _ch in text:
+        if _ch == '"':
+            _in_quote = not _in_quote
+            _out.append(_ch)
+        elif _ch == "\n" and _in_quote:
+            _out.append(" ")
+        else:
+            _out.append(_ch)
+    text = "".join(_out)
+
     lines = [l for l in text.strip().split("\n") if l.strip()]
     if len(lines) < 2:
         return {"error": "Too few lines in CSV"}
