@@ -1774,15 +1774,23 @@ def _parse_ksh_csv(text: str, max_rows: int = 500) -> dict:
             else:
                 row[h] = None
         rows.append(row)
-        if len(rows) >= max_rows:
-            break
+        # Note: don't break early — collect ALL rows so we can keep the
+        # FRESHEST rows on truncation, not the oldest. KSH STADAT files
+        # are ASC by time (oldest year/month first), so taking rows[:max]
+        # was hiding 2026 data behind decades of 1960s-2000s observations.
+        # (2026-05-05 audit fix.)
+
+    total_in_file = len(rows)
+    truncated = total_in_file > max_rows
+    if truncated:
+        rows = rows[-max_rows:]  # keep the freshest
 
     return {
         "title": title,
         "columns": headers,
         "row_count": len(rows),
-        "total_rows_in_file": len(lines) - data_start,
-        "truncated": len(rows) >= max_rows,
+        "total_rows_in_file": total_in_file,
+        "truncated": truncated,
         "data": rows,
     }
 
