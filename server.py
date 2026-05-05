@@ -364,7 +364,24 @@ def _parse_json_stat(data: dict) -> dict:
         row["value"] = val
         rows.append(row)
 
-    # Truncate if too many rows
+    # Sort DESC by time so that downstream truncation (both this 500-row cap
+    # and the Bridge's per-tool char limit) preserves the LATEST observations
+    # rather than the oldest. Eurostat returns rows ASC by default — without
+    # this fix, sub-agents only ever saw 1995-onwards old data instead of the
+    # 2026 frontier. (2026-05-05 audit-fix.)
+    time_label = None
+    for d in dims:
+        info = dim_labels.get(d, {})
+        if d.lower() == "time" or "time" in info.get("label", "").lower():
+            time_label = info.get("label", d)
+            break
+    if time_label:
+        try:
+            rows.sort(key=lambda r: str(r.get(time_label, "")), reverse=True)
+        except Exception:
+            pass
+
+    # Truncate if too many rows (now keeps the freshest 500, not the oldest)
     truncated = False
     if len(rows) > 500:
         rows = rows[:500]
