@@ -2066,7 +2066,12 @@ def calculate(expression: str) -> str:
         return json.dumps({
             "error": str(e),
             "expression": expression,
-            "hint": "Examples: '2+3', 'cum_inflation([104.9, 103.9])', 'cagr(100, 200, 10)'",
+            "hint": (
+                "Examples: '2+3*4', '(1.05)**10', 'sqrt(16)', 'log(2.718)', "
+                "'cum_inflation([104.9, 103.9])', 'cagr(100, 200, 10)', "
+                "'real_value(509571, [104.9, 103.9])', 'convert(509571, 393)'. "
+                "NOTE: math module is NOT importable — use bare names: sqrt, log, log10."
+            ),
         }, indent=2)
 
 
@@ -2110,6 +2115,12 @@ def mnb_rates(
         Historical mode: JSON with daily MNB rates. Note: no rates on weekends/holidays.
     """
     mode = mode.strip().lower()
+
+    if mode not in ("current", "historical"):
+        return json.dumps({
+            "error": f"Unknown mode: '{mode}'",
+            "hint": "Use mode='current' (today's rates) or mode='historical' (date range).",
+        }, indent=2)
 
     # --- CURRENT MODE ---
     if mode == "current":
@@ -2487,6 +2498,12 @@ def recipe_book(
     """
     action = action.strip().lower()
 
+    if action not in ("search", "add", "report", "stats"):
+        return json.dumps({
+            "error": f"Unknown action: '{action}'",
+            "hint": "Use action='search' (default), 'add', 'report', or 'stats'.",
+        }, indent=2)
+
     # --- STATS MODE ---
     if action == "stats":
         stats = _load_usage_stats()
@@ -2783,8 +2800,9 @@ async def get_fred_data(
             client.get(f"{_FRED_BASE}/series/observations", params=params),
         )
 
-        # Parse series metadata
-        meta = {}
+        # Parse series metadata. Always include id so sub-agents see which
+        # series they got back even if the /series endpoint flakes.
+        meta = {"id": series_id}
         if info_resp.status_code == 200:
             serieses = info_resp.json().get("seriess", [])
             if serieses:
@@ -2797,6 +2815,19 @@ async def get_fred_data(
                     "seasonal_adjustment": s.get("seasonal_adjustment_short"),
                     "last_updated": s.get("last_updated"),
                 }
+        # Reflect the caller's requested transformations so sub-agents don't
+        # mistake transformed values for the native units.
+        if frequency:
+            meta["frequency_requested"] = frequency
+            meta["frequency_note"] = "Aggregated by FRED API at request — values reflect this aggregation, native frequency_short above is the source frequency."
+        if units:
+            meta["units_requested"] = units
+            meta["units_note"] = (
+                "Values transformed by FRED API. units codes: lin=levels, chg=change, "
+                "ch1=change-from-year-ago, pch=%-change, pc1=%-change-from-year-ago, "
+                "pca=compounded-annual-rate, log=natural-log. The native units string above "
+                "(e.g. 'Percent') describes the SOURCE series, NOT the transformed value."
+            )
 
         # Parse observations
         if obs_resp.status_code != 200:
@@ -2915,13 +2946,17 @@ async def _get_oecd_cli_data(country: str, periods: int = 12) -> str:
         if not values:
             return json.dumps({"error": f"No valid CLI observations for {code_3}"}, indent=2)
 
-        latest = values[-1]
+        # OECD returns rows in DESC time order (newest first), so values[0] is
+        # the freshest observation and values[-1] is the oldest. Earlier code
+        # took values[-1] as "latest" — that gave a 12-month-old number while
+        # history[0] showed a fresh one. Fixed 2026-05-05.
+        latest = values[0]
 
-        # Trend: 3-month change
+        # Trend: 3-month change (newest - 3 months ago)
         trend = None
         trend_direction = "unknown"
         if len(values) >= 4:
-            trend = round(values[-1] - values[-4], 3)
+            trend = round(values[0] - values[3], 3)
             if trend > 0.2:
                 trend_direction = "improving"
             elif trend < -0.2:
@@ -2947,7 +2982,7 @@ async def _get_oecd_cli_data(country: str, periods: int = 12) -> str:
             "source": f"OECD Composite Leading Indicator ({measure_label})",
             "country": code_3,
             "latest_value": round(latest, 2),
-            "latest_period": periods_list[-1] if periods_list else None,
+            "latest_period": periods_list[0] if periods_list else None,
             "momentum": "expansion" if latest > 100 else "contraction",
             "trend_3m": trend,
             "trend_direction": trend_direction,
@@ -3186,6 +3221,15 @@ async def forecast(
         "BR": "BRA", "MX": "MEX", "TR": "TUR", "ZA": "ZAF",
         "RS": "SRB", "UA": "UKR", "GR": "GRC", "EL": "GRC",
     }
+
+    # Hard-reject unknown country codes. Earlier behavior silently fell through
+    # to an "empty forecast" with confidence=30 and a fabricated gdp_signal —
+    # which sub-agents took as real data. (2026-05-05 audit fix.)
+    if country not in _ISO3 and country not in _ISO3.values():
+        return json.dumps({
+            "error": f"Unknown country: '{country}'",
+            "hint": "Use ISO-2 code. Supported: " + ", ".join(sorted(_ISO3.keys())),
+        }, indent=2)
     _IMF_INDICATORS = {
         "gdp": "NGDP_RPCH",       # Real GDP growth %
         "inflation": "PCPIPCH",    # CPI inflation %
