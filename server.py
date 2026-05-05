@@ -1831,12 +1831,52 @@ async def yfinance(
             ticker = yf.Ticker(symbol)
             info = ticker.info
 
-            # Detect invalid/not-found symbols
             price = info.get("regularMarketPrice") or info.get("previousClose")
+
+            # --- Freshness / staleness detection ---
+            from datetime import datetime, timezone
+            mkt_time = info.get("regularMarketTime")
+            last_trade_at = ""
+            data_age_days: Optional[int] = None
+            if mkt_time:
+                try:
+                    dt = datetime.fromtimestamp(int(mkt_time), tz=timezone.utc)
+                    last_trade_at = dt.strftime("%Y-%m-%d %H:%M UTC")
+                    data_age_days = (datetime.now(timezone.utc) - dt).days
+                except (ValueError, OSError, OverflowError):
+                    pass
+
+            instrument_type = (info.get("quoteType") or info.get("typeDisp") or "").upper()
+
+            # Hard reject: dead/delisted ticker. Yahoo sometimes keeps stale
+            # entries (e.g. 1990s mutual funds delisted ~7 years ago) — these
+            # silently poison sub-agent reasoning. Block them explicitly.
+            stale = False
+            stale_reason = ""
+            if data_age_days is not None and data_age_days > 30:
+                stale = True
+                stale_reason = f"last trade {data_age_days}d ago"
+            if price in (0, 0.0, None):
+                stale = True
+                stale_reason = (stale_reason + "; " if stale_reason else "") + "regularMarketPrice is 0/None"
+
             if not price and not info.get("currency"):
                 return json.dumps({
                     "error": f"Symbol '{symbol}' not found or has no data",
-                    "hint": "Check the symbol format. Examples: 'AAPL', 'OTP.BD', 'EURHUF=X', 'GC=F', '^BUX'",
+                    "hint": "Check the symbol format. Examples: 'AAPL', 'OTP.BD', 'EURHUF=X', 'GC=F'. Hungarian BUX index is NOT on Yahoo as '^BUX' — use OTP.BD/MOL.BD/RICHTER.BD as proxies.",
+                }, indent=2)
+
+            if stale:
+                return json.dumps({
+                    "error": f"Symbol '{symbol}' returns STALE data — {stale_reason}",
+                    "stale": True,
+                    "last_trade_at": last_trade_at,
+                    "data_age_days": data_age_days,
+                    "instrument_type": instrument_type,
+                    "exchange": info.get("exchange", ""),
+                    "currency": info.get("currency", ""),
+                    "fiftyTwoWeekHigh_observed": info.get("fiftyTwoWeekHigh"),
+                    "hint": "This ticker is dead/delisted on Yahoo. The 52w high/low values shown are historical and NOT current market data. Do NOT cite these as current prices.",
                 }, indent=2)
 
             # Extract most useful fields
@@ -1856,6 +1896,9 @@ async def yfinance(
                 "pe_ratio": info.get("trailingPE"),
                 "dividend_yield": info.get("dividendYield"),
                 "exchange": info.get("exchange", ""),
+                "instrument_type": instrument_type,
+                "last_trade_at": last_trade_at,
+                "data_age_days": data_age_days,
             }
             # Remove None values
             result = {k: v for k, v in result.items() if v is not None}
@@ -1865,7 +1908,7 @@ async def yfinance(
         except Exception as e:
             return json.dumps({
                 "error": str(e),
-                "hint": f"Check symbol '{symbol}'. Examples: 'AAPL', 'EURHUF=X', 'GC=F', '^BUX'",
+                "hint": f"Check symbol '{symbol}'. Examples: 'AAPL', 'EURHUF=X', 'GC=F', 'OTP.BD'",
             }, indent=2)
 
     # --- HISTORY MODE ---
@@ -3486,6 +3529,8 @@ async def get_policy_rates(
 
     series_list = data.get("series", {}).get("docs", [])
     results = {}
+    from datetime import date as _date
+    today = _date.today()
     for s in series_list:
         code = s.get("series_code", "")
         ref_area = code.split(".")[1] if "." in code else code
@@ -3494,9 +3539,28 @@ async def get_policy_rates(
         obs = [{"period": p, "rate": v} for p, v in zip(periods, values) if v is not None]
         obs = obs[-limit:]
         if obs:
+            as_of = obs[-1]["period"]
+            # Estimate freshness — BIS WS_CBPOL is monthly ('YYYY-MM') by default.
+            age_months = None
+            stale = False
+            try:
+                if len(as_of) == 7 and as_of[4] == "-":
+                    y, m = int(as_of[:4]), int(as_of[5:7])
+                    age_months = (today.year - y) * 12 + (today.month - m)
+                    stale = age_months > 6
+                elif len(as_of) == 10 and as_of[4] == "-" and as_of[7] == "-":
+                    y, m, d = int(as_of[:4]), int(as_of[5:7]), int(as_of[8:10])
+                    diff = (today - _date(y, m, d)).days
+                    age_months = diff // 30
+                    stale = diff > 180
+            except (ValueError, IndexError):
+                pass
+
             results[ref_area] = {
                 "current_rate": obs[-1]["rate"],
-                "as_of": obs[-1]["period"],
+                "as_of": as_of,
+                "data_age_months": age_months,
+                "stale": stale,
                 "history": obs,
             }
 
@@ -3508,17 +3572,28 @@ async def get_policy_rates(
              "TR": "Turkey (TCMB)", "HR": "Croatia (HNB)"}
 
     summary = []
+    notes = []
     for code in codes:
         if code in results:
             r = results[code]
             name = names.get(code, code)
-            summary.append(f"{name}: {r['current_rate']}% ({r['as_of']})")
+            stale_tag = " [STALE!]" if r.get("stale") else ""
+            summary.append(f"{name}: {r['current_rate']}% ({r['as_of']}{stale_tag})")
+            if r.get("stale"):
+                notes.append(
+                    f"WARNING: {name} latest BIS data point is from {r['as_of']} "
+                    f"(~{r.get('data_age_months')} months ago). The rate may have changed since. "
+                    f"Verify with web_search if a current decision matters."
+                )
 
-    return json.dumps({
+    out = {
         "source": "BIS WS_CBPOL via DBnomics",
         "summary": summary,
         "rates": results,
-    }, ensure_ascii=False, indent=2)
+    }
+    if notes:
+        out["staleness_notes"] = notes
+    return json.dumps(out, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
