@@ -38,7 +38,7 @@ import httpx
 import yfinance as yf
 from mnb import Mnb as MnbClient
 from mcp.server.fastmcp import FastMCP
-from starlette.responses import HTMLResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, Response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("statdata")
@@ -4013,6 +4013,65 @@ async def landing_page(request):
     base_url = f"{scheme}://{host}"
     html = LANDING_HTML.replace("__BASE_URL__", base_url)
     return HTMLResponse(html)
+
+
+# ---------------------------------------------------------------------------
+# REST API — for Bridge / external clients to invoke tools without MCP plumbing
+# ---------------------------------------------------------------------------
+_API_TOOL_DISPATCH = {
+    "search_datasets": search_datasets,
+    "get_eurostat_data": get_eurostat_data,
+    "get_ksh_hvd": get_ksh_hvd,
+    "dbnomics_search": dbnomics_search,
+    "dbnomics_series": dbnomics_series,
+    "get_ksh_stadat": get_ksh_stadat,
+    "yfinance": yfinance,
+    "calculate": calculate,
+    "mnb_rates": mnb_rates,
+    "recipe_book": recipe_book,
+    "get_fred_data": get_fred_data,
+    "forecast": forecast,
+    "get_economic_calendar": get_economic_calendar,
+    "get_policy_rates": get_policy_rates,
+}
+
+
+@mcp.custom_route("/api/call", methods=["POST"])
+async def api_call(request):
+    """Generic REST dispatch: POST {"tool": "<name>", "args": {...}}.
+
+    Returns {"ok": true, "result": <str>} on success, {"ok": false, "error": <str>}
+    on failure (HTTP 400/404/500). Mirrors the @mcp.tool() callable surface for
+    REST clients (notably the Claus Bridge MCP).
+    """
+    try:
+        body = await request.json()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"invalid JSON: {e}"}, status_code=400)
+
+    tool_name = (body or {}).get("tool", "")
+    args = (body or {}).get("args") or {}
+    if not isinstance(args, dict):
+        return JSONResponse({"ok": False, "error": "args must be an object"}, status_code=400)
+
+    func = _API_TOOL_DISPATCH.get(tool_name)
+    if not func:
+        return JSONResponse(
+            {"ok": False, "error": f"unknown tool: {tool_name!r}", "valid": list(_API_TOOL_DISPATCH)},
+            status_code=404,
+        )
+
+    try:
+        result = func(**args)
+        if asyncio.iscoroutine(result):
+            result = await result
+    except TypeError as e:
+        return JSONResponse({"ok": False, "error": f"bad args: {e}"}, status_code=400)
+    except Exception as e:
+        logger.exception("api_call %s failed", tool_name)
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+    return JSONResponse({"ok": True, "result": result})
 
 
 # ---------------------------------------------------------------------------
