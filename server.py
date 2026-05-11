@@ -4119,72 +4119,115 @@ async def get_policy_rates(
                     f"Verify with web_search if a current decision matters."
                 )
 
-    out = {
-        "source": "BIS WS_CBPOL via DBnomics",
-        "summary": summary,
-        "rates": results,
-    }
+    # STALE feloldás: a 'rates' mezőben már a FELOLDOTT (legfrissebb elérhető)
+    # érték legyen. A stale BIS eredeti adatpontot a 'raw_bis' mezőbe tesszük.
+    # Így a 3 sub-agent ugyanazt látja, nem kell mindenkinek külön rájönnie.
+    raw_bis = {k: dict(v) for k, v in results.items()}  # eredeti BIS megőrzendő
+    # results: kezdetben a BIS-eredmény; majd felülírjuk a fresh forrásokkal.
 
-    # If any country's BIS data is stale, augment with Eurostat irt_st_m
-    # (Day-to-day money market rate) as a fresh proxy. The Eurostat money
-    # market rate tracks the central bank policy rate within ~10 bps for
-    # the CEE economies (HU/CZ/PL/RO) and the Nordics — it's the best
-    # available signal when BIS lags by 6+ months. (2026-05-05 audit fix.)
-    stale_codes = [c for c in codes if results.get(c, {}).get("stale")]
-    if stale_codes:
-        try:
-            proxy = await _fetch_eurostat_policy_proxy(stale_codes)
-            if proxy:
-                out["eurostat_proxy"] = {
-                    "note": (
-                        "BIS WS_CBPOL data above is stale. The values below are "
-                        "the Day-to-day money market rate from Eurostat irt_st_m, "
-                        "which tracks the central bank policy rate within ~10 bps "
-                        "for HU/CZ/PL/RO/Nordics. NOT identical to the policy "
-                        "rate but is the best fresh proxy. Euro area, US, JP, "
-                        "and other non-EEA countries are NOT covered by Eurostat."
-                    ),
-                    "rates": proxy,
-                }
-        except Exception as e:
-            logger.warning("Eurostat policy_proxy fallback failed: %s", e)
+    eurostat_proxy: dict = {}
+    ecb_rates: dict = {}
 
-    # For the euro area (XM) ECB DFR is the actual policy rate. BIS publishes
-    # this monthly and lags up to 4 weeks; we always overlay the latest daily
-    # value from the ECB Data Portal so XM is never stale.
+    # 1. ECB DFR overlay az XM-re (mindig friss, daily)
     if "XM" in codes:
         try:
-            ecb_rates = await _fetch_ecb_policy_rates()
-            if ecb_rates:
-                out.setdefault("ecb_direct", {})
-                out["ecb_direct"] = {
-                    "note": (
-                        "Direct daily values from ECB Data Portal (data-api.ecb.europa.eu). "
-                        "DFR = Deposit Facility Rate (the operational policy rate since "
-                        "the 2019 corridor reform). MRR_FR = Main Refinancing Operations "
-                        "fixed rate. MLFR = Marginal Lending Facility Rate."
-                    ),
-                    **ecb_rates,
-                }
-                # Overlay XM current_rate with the fresh DFR so summary reflects truth
-                dfr = ecb_rates.get("deposit_facility_rate")
-                if isinstance(dfr, dict) and dfr.get("value") is not None:
-                    xm = out["rates"].setdefault("XM", {})
-                    xm["current_rate_ecb_direct"] = dfr["value"]
-                    xm["ecb_as_of"] = dfr.get("period")
-                    # Replace the summary line for XM with the fresh ECB DFR
-                    for i, line in enumerate(summary):
-                        if line.startswith("Euro area"):
-                            summary[i] = (
-                                f"Euro area (ECB DFR): {dfr['value']}% "
-                                f"({dfr.get('period')}) [direct from ECB]"
-                            )
-                            break
+            ecb_rates = await _fetch_ecb_policy_rates() or {}
         except Exception as e:
             logger.warning("ECB direct policy rate fetch failed: %s", e)
+        dfr = ecb_rates.get("deposit_facility_rate")
+        if isinstance(dfr, dict) and dfr.get("value") is not None:
+            xm_resolved = {
+                "current_rate": dfr["value"],
+                "as_of": dfr.get("period"),
+                "data_age_months": 0,
+                "stale": False,
+                "resolved_source": "ECB Data Portal (DFR)",
+                "history": results.get("XM", {}).get("history", []),
+            }
+            results["XM"] = xm_resolved
 
+    # 2. Általános per-country overlay: minden code-ra hívjuk a magas-szintű
+    # get_macro_indicator(country, indicator='policy_rate')-et. Ha fresh, az
+    # központi bank scrape / brave_search / dedikált forrás eredménye nyer.
+    # Ez HU/CZ/PL/RO/SE/DK/NO/CH/GB/JP/US/TR + mind a non-EU országra működik
+    # ahol az INDICATOR_RESOLVERS-ben policy_rate definiálva van.
+    for code in codes:
+        if code == "XM":
+            continue  # XM-re az ECB DFR overlay (fent) már friss
+        try:
+            macro = json.loads(await get_macro_indicator(country=code, indicator="policy_rate"))
+        except Exception as e:
+            logger.warning("get_macro_indicator(%s, policy_rate) failed: %s", code, e)
+            continue
+        if macro.get("status") == "fresh" and macro.get("value") is not None:
+            results[code] = {
+                "current_rate": macro["value"],
+                "as_of": macro.get("period"),
+                "data_age_months": 0,
+                "stale": False,
+                "resolved_source": macro.get("source_used", "get_macro_indicator"),
+                "decision_date": macro.get("decision_date"),
+                "history": raw_bis.get(code, {}).get("history", []),
+            }
+
+    # 3. Eurostat irt_st_m proxy a CEE/Nordic stale-ekre
+    stale_codes_after_overlay = [c for c in codes if results.get(c, {}).get("stale")]
+    if stale_codes_after_overlay:
+        try:
+            eurostat_proxy = await _fetch_eurostat_policy_proxy(stale_codes_after_overlay) or {}
+        except Exception as e:
+            logger.warning("Eurostat policy_proxy fallback failed: %s", e)
+        for code, proxy_info in eurostat_proxy.items():
+            if proxy_info and proxy_info.get("value") is not None:
+                results[code] = {
+                    "current_rate": proxy_info["value"],
+                    "as_of": proxy_info.get("period"),
+                    "data_age_months": None,
+                    "stale": False,
+                    "resolved_source": proxy_info.get(
+                        "source", "Eurostat irt_st_m (Day-to-day money market rate, ~10 bps proxy)"
+                    ),
+                    "proxy_note": "Money market rate, ~10 bps off the actual policy rate.",
+                    "history": raw_bis.get(code, {}).get("history", []),
+                }
+
+    # Új summary a feloldott értékek alapján
+    resolved_summary: list[str] = []
+    for code in codes:
+        r = results.get(code, {})
+        name = names.get(code, code)
+        if r.get("current_rate") is not None:
+            stale_tag = " [STALE!]" if r.get("stale") else ""
+            src = r.get("resolved_source", "BIS WS_CBPOL")
+            resolved_summary.append(
+                f"{name}: {r['current_rate']}% ({r.get('as_of','?')}{stale_tag}) — {src}"
+            )
+
+    out = {
+        "source": "Multi-source policy rates (BIS + ECB direct + MNB scrape + Eurostat proxy)",
+        "summary": resolved_summary,
+        "rates": results,         # FELOLDOTT (legfrissebb)
+        "raw_bis": raw_bis,       # eredeti BIS adatpontok (audit-trail)
+    }
+    if ecb_rates:
+        out["ecb_direct"] = {
+            "note": "Daily ECB rates: DFR (operational policy), MRR_FR (main refi), MLFR (marginal lending).",
+            **ecb_rates,
+        }
+    if eurostat_proxy:
+        out["eurostat_proxy"] = {
+            "note": "Day-to-day money market rate ~ policy rate within 10 bps for HU/CZ/PL/RO/Nordics.",
+            "rates": eurostat_proxy,
+        }
     if notes:
         out["staleness_notes"] = notes
+
+    out["agent_instruction"] = (
+        "Idézd közvetlenül a 'rates[<country>].current_rate' értéket és a "
+        "'resolved_source' mezőt. A 'raw_bis' csak audit-trail — NE flag-eld "
+        "stale-ként, ha a 'rates' mezőben friss érték van. HU esetén a "
+        "'decision_date' jelzi a Monetáris Tanács ülésnapját."
+    )
     return json.dumps(out, ensure_ascii=False, indent=2)
 
 
