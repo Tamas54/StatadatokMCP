@@ -868,6 +868,11 @@ async def get_eurostat_data(
             except Exception:
                 pass
 
+        # ─── derived blokk: pre-kalkulált YoY% és QoQ% Eurostat idősorra ──
+        derived = _compute_eurostat_derived(parsed.get("data") or [])
+        if derived:
+            parsed["derived"] = derived
+
         return json.dumps(parsed, ensure_ascii=False, indent=2)
 
     except httpx.HTTPStatusError as e:
@@ -1905,6 +1910,148 @@ _HUN_MONTHS_DESC: list[tuple[str, int]] = [
 ]
 
 
+def _compute_eurostat_derived(rows: list[dict]) -> dict:
+    """Compute 'derived' YoY% / QoQ% for an Eurostat JSON-stat time series.
+
+    The data list is in long-format: each row has a 'Time' key (e.g. '2026-04'
+    or '2026-Q1') and a 'value' key. The function pivots on the 'Time' axis
+    and computes:
+      - latest_value + period
+      - yoy_change_pct  (compare to same-month 12 months back / same-quarter
+                         4 quarters back)
+      - qoq_change_pct  (compare to immediately preceding period — only for
+                         quarterly data)
+      - trend_6m_or_4q  (slope of last 6 monthly / 4 quarterly observations)
+
+    Each calculated field carries an explicit 'formula' string for citation.
+    Empty if the series has fewer than 13 monthly or 5 quarterly observations.
+    """
+    if not rows:
+        return {}
+    # Detect whether the series already encodes annual/MoM rate-of-change.
+    # If so, YoY/MoM kalkuláció félrevezető (rate-of-rate), de a level-mezők
+    # (latest, period, trend) értelmesek.
+    first = rows[0]
+    unit_str = " ".join(
+        str(first.get(k, "")).lower()
+        for k in ("Unit", "unit", "Unit of measure", "unit of measure")
+    )
+    is_rate = any(kw in unit_str for kw in (
+        "rate of change", "annual rate", "percentage change",
+        "monthly rate", "growth rate", "% change",
+    ))
+    # Filter rows with usable Time + value
+    cleaned = []
+    for r in rows:
+        t = str(r.get("Time", r.get("time", ""))).strip()
+        v = r.get("value")
+        if not t or v is None:
+            continue
+        try:
+            v_float = float(v)
+        except (TypeError, ValueError):
+            continue
+        cleaned.append((t, v_float))
+    if len(cleaned) < 2:
+        return {}
+    cleaned.sort(key=lambda x: x[0])
+
+    latest_period, latest_value = cleaned[-1]
+    # Quarterly vs monthly detection
+    is_quarterly = "-Q" in latest_period or "Q" in latest_period.split("-")[-1]
+    is_monthly   = (len(latest_period) == 7 and latest_period[4] == "-"
+                    and not is_quarterly)
+
+    derived: dict = {
+        "latest_value": latest_value,
+        "latest_period": latest_period,
+        "series_is_rate_of_change": is_rate,
+    }
+
+    def _find_period(target: str):
+        for t, v in cleaned:
+            if t == target:
+                return v
+        return None
+
+    # YoY%
+    yoy_target = None
+    if is_monthly:
+        try:
+            y, m = int(latest_period[:4]), int(latest_period[5:7])
+            yoy_target = f"{y - 1}-{m:02d}"
+        except (ValueError, IndexError):
+            pass
+    elif is_quarterly:
+        # "2026-Q1" → "2025-Q1"
+        try:
+            y_str, q_str = latest_period.split("-Q")
+            yoy_target = f"{int(y_str) - 1}-Q{q_str}"
+        except (ValueError, IndexError):
+            pass
+
+    # YoY/QoQ/MoM kalkuláció CSAK ha a sorozat LEVEL-érték (nem rate-of-change).
+    # A rate-sorozatoknál (prc_hicp_manr, sts_inpp_m _RCH_A unit-tel) a value
+    # ÉPP a YoY% — nem szabad rekalkulálni.
+    if not is_rate and yoy_target:
+        prev_val = _find_period(yoy_target)
+        if prev_val is not None and prev_val != 0:
+            yoy = round((latest_value / prev_val - 1) * 100, 2)
+            derived["yoy_change_pct"] = yoy
+            derived["yoy_base_period"] = yoy_target
+            derived["yoy_base_value"] = prev_val
+            derived["yoy_formula"] = f"({latest_value} / {prev_val} - 1) * 100"
+
+    # QoQ% for quarterly LEVEL series
+    if not is_rate and is_quarterly and len(cleaned) >= 2:
+        prev_quarter_value = cleaned[-2][1]
+        prev_quarter_period = cleaned[-2][0]
+        if prev_quarter_value != 0:
+            qoq = round((latest_value / prev_quarter_value - 1) * 100, 2)
+            derived["qoq_change_pct"] = qoq
+            derived["qoq_base_period"] = prev_quarter_period
+            derived["qoq_formula"] = f"({latest_value} / {prev_quarter_value} - 1) * 100"
+
+    # MoM% for monthly LEVEL series
+    if not is_rate and is_monthly and len(cleaned) >= 2:
+        prev_month_value = cleaned[-2][1]
+        prev_month_period = cleaned[-2][0]
+        if prev_month_value != 0:
+            mom = round((latest_value / prev_month_value - 1) * 100, 2)
+            derived["mom_change_pct"] = mom
+            derived["mom_base_period"] = prev_month_period
+            derived["mom_formula"] = f"({latest_value} / {prev_month_value} - 1) * 100"
+
+    # Trend: slope of last 6 monthly / 4 quarterly observations
+    trend_n = 6 if is_monthly else 4 if is_quarterly else 0
+    if trend_n and len(cleaned) >= trend_n:
+        window = [v for _, v in cleaned[-trend_n:]]
+        first_v, last_v = window[0], window[-1]
+        if first_v != 0:
+            slope_pct = round((last_v / first_v - 1) * 100, 2)
+            direction = "accelerating" if slope_pct > 0.5 else "decelerating" if slope_pct < -0.5 else "stable"
+            derived[f"trend_{trend_n}{'m' if is_monthly else 'q'}"] = {
+                "direction": direction,
+                "change_pct_over_window": slope_pct,
+                "window": [cleaned[-trend_n][0], cleaned[-1][0]],
+                "first_value": first_v,
+                "last_value": last_v,
+            }
+
+    derived["note"] = (
+        "Pre-computed by the StatData router. "
+        + (
+            "A series_is_rate_of_change=True jelzés azt jelenti hogy a value MÁR "
+            "egy YoY%-/MoM%- jellegű ráta — a latest_value az AKTUÁLIS YoY%, NEM "
+            "szabad újra YoY-t számolni rajta. A trend ablak slope-ja a ráta változását mutatja."
+            if is_rate else
+            "LEVEL-érték sorozat. A yoy_change_pct / qoq_change_pct / mom_change_pct "
+            "explicit formulákkal pre-kalkulálva — idézd ezeket a brief-ben, NE re-derive."
+        )
+    )
+    return derived
+
+
 def _compute_ksh_derived(rows: list[dict], headers: list[str]) -> dict:
     """Compute a 'derived.latest_yoy' block for KSH STADAT wide-matrix tables.
 
@@ -2495,7 +2642,7 @@ def mnb_rates(
             rows = rows[-500:]
             truncated = True
 
-        return json.dumps({
+        out = {
             "source": "Magyar Nemzeti Bank (MNB)",
             "currencies": curr_list,
             "start": start_date,
@@ -2503,7 +2650,39 @@ def mnb_rates(
             "data_points": len(rows),
             "truncated_to_last_500": truncated,
             "data": rows,
-        }, ensure_ascii=False, indent=2)
+        }
+        # ─── derived blokk: pre-kalkulált per-currency idősor-mutatók ──
+        if rows:
+            derived: dict = {}
+            for cur in curr_list:
+                vals = [(r["date"], r[cur]) for r in rows if cur in r and r[cur] is not None]
+                if len(vals) < 2:
+                    continue
+                first_d, first_v = vals[0]
+                last_d, last_v = vals[-1]
+                nums = [v for _, v in vals]
+                period_avg = round(sum(nums) / len(nums), 4)
+                period_min = min(nums)
+                period_max = max(nums)
+                pct = round((last_v / first_v - 1) * 100, 2) if first_v else None
+                derived[cur] = {
+                    "latest_close": last_v,
+                    "latest_date": last_d,
+                    "period_first": first_v,
+                    "period_first_date": first_d,
+                    "period_avg": period_avg,
+                    "period_min": period_min,
+                    "period_max": period_max,
+                    "period_pct_change": pct,
+                    "formula_pct_change": f"({last_v} / {first_v} - 1) * 100",
+                }
+            if derived:
+                out["derived"] = derived
+                out["derived"]["note"] = (
+                    "Pre-computed per-currency stats. Quote latest_close and "
+                    "period_pct_change directly — do NOT re-derive from data."
+                )
+        return json.dumps(out, ensure_ascii=False, indent=2)
 
     except Exception as e:
         return json.dumps({"error": str(e)}, indent=2)
