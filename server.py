@@ -5179,14 +5179,28 @@ INDICATOR_RESOLVERS[("HU", "ppi")] = [
                               "rx": r"(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("HU", "core_cpi")] = [
-    # ELSŐ: KSH gyorstájékoztató maginfláció sora
+    # KSH flash table: "Maginfláció ... 100,4 102,2" — első szám MoM (havi 100,X),
+    # MÁSODIK az annual rate (100=ny:base). A regex átugorja az MoM-ot.
+    # YoY% = annual_rate - 100.
     {"type": "ksh_flash",    "topic": "far",
-                              "rx": r"[Mm]aginfláció[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
-    {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.XEF000.4.ANR"},
+                              "rx": r"[Mm]aginfláció[\s\S]{0,200}?\d{3}[,.]\d[\s\S]{0,30}?(\d{3}[,.]\d)",
+                              "convert": "subtract_100"},
     {"type": "ksh_stadat",   "table_code": "ara0045", "yoy_from_index": True},
+    {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.XEF000.4.ANR"},
     {"type": "brave_search", "query": "MNB maginfláció {YYYY-MM}",
                               "site": "mnb.hu",
                               "rx": r"maginfláció[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
+]
+
+# HU HICP — a KSH flash külön sorban publikálja: "Harmonizált fogyasztóiár-index"
+# Az Eurostat-prc_hicp_manr 2025-12-nél csonkol, ezért a KSH flash kanonikus
+# friss forrás HU HICP-re.
+INDICATOR_RESOLVERS[("HU", "hicp")] = [
+    {"type": "ksh_flash",    "topic": "far",
+                              "rx": r"[Hh]armoniz[áa]lt\s+fogyasztó[\s\S]{0,80}?\d{3}[,.]\d[\s\S]{0,30}?(\d{3}[,.]\d)",
+                              "convert": "subtract_100"},
+    {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.000000.4.ANR"},
+    {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "HU"},
 ]
 # Food and energy CPI from KSH flash as well — markdown + HTML kompatibilis
 INDICATOR_RESOLVERS[("HU", "food_cpi")] = [
@@ -6391,12 +6405,17 @@ async def _resolver_ksh_flash(spec: dict) -> Optional[dict]:
         candidates.append((f"{y}-{mm}", url))
 
     sign_aware = bool(spec.get("sign_aware", False))
+    convert = spec.get("convert")  # 'subtract_100' a 100-bázisú indexekre
     for period, url in candidates:
         try:
             result = await _scrape_extract_value(url, rx, sign_aware=sign_aware)
         except Exception:
             continue
         if result and result.get("value") is not None:
+            # 100-bázisú index → YoY% konverzió (102,2 → +2,2%)
+            if convert == "subtract_100":
+                result["raw_index"] = result["value"]
+                result["value"] = round(result["value"] - 100, 2)
             result["period"] = period
             result["source"] = f"KSH flash {topic} {period}"
             result["source_url"] = url
@@ -6647,6 +6666,20 @@ async def get_macro_indicator(
             "value": result["value"], "period": period, "fresh": fresh,
         })
         if fresh:
+            # Methodology break: COICOP 2.0 transition affecting HICP series
+            # from 2026-01 onwards. Eurostat re-weighted and re-classified the
+            # consumption basket; pre-2026 and 2026+ HICP values are NOT a
+            # fully comparable time series.
+            methodology_note = None
+            if indicator in ("cpi", "core_cpi", "services_cpi", "energy_cpi", "food_cpi", "hicp"):
+                if str(period).startswith("2026"):
+                    methodology_note = (
+                        "Eurostat HICP COICOP 2.0 (ECOICOP 2) átvezetés 2026-01-tól: "
+                        "a 2026-os HICP-értékek új klasszifikációval és súlyozással "
+                        "készülnek. Idősor-összevetés 2025 és korábbi évekkel óvatosan, "
+                        "módszertani törést jelölj."
+                    )
+
             out_payload = {
                 "country": country,
                 "indicator": indicator,
@@ -6669,9 +6702,11 @@ async def get_macro_indicator(
             }
             # Optional context fields propagated from resolver
             for key in ("decision_date", "is_flash", "release_date",
-                        "release_type", "time_series"):
+                        "release_type", "time_series", "raw_index"):
                 if result.get(key) is not None:
                     out_payload[key] = result[key]
+            if methodology_note:
+                out_payload["methodology_note"] = methodology_note
             return json.dumps(out_payload, ensure_ascii=False, indent=2)
         # Stale but valid — keep as best fallback
         dt = _parse_period_to_date(period)
