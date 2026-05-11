@@ -4654,6 +4654,11 @@ _FRESHNESS_DAYS: dict[str, int] = {
     "gov_debt": 180,     # Quarterly, often a quarter lag
     "house_prices": 180,
     "bond_yield_10y": 60,  # Daily/monthly; long-term Maastricht yield
+    "gdp_consumption": 150,  # Quarterly GDP components
+    "gdp_investment": 150,
+    "gdp_exports": 150,
+    "gdp_imports": 150,
+    "gdp_government": 150,
 }
 
 # Per-(country, indicator) resolver chain. Each resolver is a dict with `type`
@@ -4850,6 +4855,9 @@ INDICATOR_RESOLVERS[("HU", "cpi")] = [
     # azt scrape-eljük közvetlenül a fenti ksh_flash resolverekkel.
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.000000.4.ANR"},
     {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "HU"},
+    # OECD CPI alternatív forrás — HU/M monthly headline %change YoY
+    {"type": "oecd",         "agency": "OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0",
+                              "key":    "M.HUN.N.CPI.PA._T.N.GY"},
     {"type": "brave_search", "query": "Eurostat HICP Hungary {YYYY-MM} annual inflation rate",
                               "site": "ec.europa.eu",
                               "rx": r"Hungary[\s\S]{0,300}?(\d+[,.]\d)\s*%"},
@@ -4926,16 +4934,48 @@ INDICATOR_RESOLVERS[("HU", "unemployment")] = [
                               "rx": r"(\d+[,.]\d)\s*%"},
 ]
 
-# HU bond yield 10y — ECB IRS havi + napi fallback portfolio/MNB-ról
+# HU bond yield 10y — ECB IRS havi + AKK napi scrape
 INDICATOR_RESOLVERS[("HU", "bond_yield_10y")] = [
     {"type": "ecb",          "dataset": "IRS", "key": "M.HU.L.L40.CI.0000.HUF.N.Z"},
+    # AKK (Államadósság Kezelő Központ) — napi referencia-hozam scrape
+    {"type": "scrape",       "url": "https://www.akk.hu/aktualis-hozamok",
+                              "rx": r"10\s*éves[\s\S]{0,200}?(\d+[,.]\d{1,3})\s*%"},
+    {"type": "scrape",       "url": "https://www.akk.hu/page.php?page=Statistics_F_HU",
+                              "rx": r"10\s*éves[\s\S]{0,200}?(\d+[,.]\d{1,3})\s*%"},
     {"type": "brave_search", "query": "magyar 10 éves államkötvény hozam {YYYY-MM}",
                               "site": "akk.hu",
                               "rx": r"(\d+[,.]\d{1,3})\s*%"},
     {"type": "brave_search", "query": "magyar 10 éves államkötvény hozam {YYYY-MM}",
                               "rx": r"(\d+[,.]\d{1,3})\s*%"},
-    {"type": "brave_search", "query": "HU 10Y bond yield {YYYY-MM-DD}",
-                              "rx": r"(\d+[,.]\d{1,3})\s*%"},
+]
+
+# HU GDP componens-bontás — Eurostat namq_10_gdp más na_item-kódokkal.
+# Mind YoY%, real (CLV15_MEUR + s_adj=SCA), so the agent can derive growth.
+INDICATOR_RESOLVERS[("HU", "gdp_consumption")] = [
+    # Háztartási végső fogyasztási kiadása (P31_S14)
+    {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
+                              "filters": "na_item=P31_S14&unit=CLV15_MEUR&s_adj=SCA"},
+    # Háztartás + NPISH (alternatív bontás)
+    {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
+                              "filters": "na_item=P31_S14_S15&unit=CLV15_MEUR&s_adj=SCA"},
+]
+INDICATOR_RESOLVERS[("HU", "gdp_investment")] = [
+    # Bruttó tőkefelhalmozás (GFCF)
+    {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
+                              "filters": "na_item=P51G&unit=CLV15_MEUR&s_adj=SCA"},
+]
+INDICATOR_RESOLVERS[("HU", "gdp_exports")] = [
+    {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
+                              "filters": "na_item=P6&unit=CLV15_MEUR&s_adj=SCA"},
+]
+INDICATOR_RESOLVERS[("HU", "gdp_imports")] = [
+    {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
+                              "filters": "na_item=P7&unit=CLV15_MEUR&s_adj=SCA"},
+]
+INDICATOR_RESOLVERS[("HU", "gdp_government")] = [
+    # Kormányzati végső fogyasztási kiadása
+    {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
+                              "filters": "na_item=P3_S13&unit=CLV15_MEUR&s_adj=SCA"},
 ]
 INDICATOR_RESOLVERS[("HU", "gdp")] = [
     {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
@@ -5882,6 +5922,48 @@ async def _resolver_dbnomics(spec: dict) -> Optional[dict]:
     }
 
 
+async def _resolver_oecd(spec: dict) -> Optional[dict]:
+    """Resolver: OECD SDMX direct query.
+
+    Wraps a single OECD SDMX-JSON data call. Useful as an alternative source
+    when Eurostat/ECB ICP series are truncated (OECD often has slightly older
+    data but covers all OECD members including HU/PL/CZ/RO/JP/KR/etc.).
+
+    spec keys:
+        agency: SDMX agency.context, e.g. "OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0"
+        key: SDMX series key, e.g. "M.HUN.N.CPI.PA._T.N.GY"
+        params: optional dict of extra query params
+    """
+    base = _OECD_SDMX_BASE  # https://sdmx.oecd.org/public/rest/data
+    agency = spec["agency"]
+    key = spec["key"]
+    url = f"{base}/{agency}/{key}"
+    params = {"format": "jsondata", "lastNObservations": 12, **(spec.get("params") or {})}
+    client = await get_client()
+    try:
+        r = await client.get(url, params=params, headers={"Accept": "application/json"}, timeout=25.0)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+    except Exception:
+        return None
+
+    # OECD SDMX-JSON has same shape as ECB — reuse _parse_ecb_jsondata
+    try:
+        parsed = _parse_ecb_jsondata(d)
+    except Exception:
+        return None
+    obs = parsed.get("observations") or []
+    if not obs:
+        return None
+    latest = obs[-1]
+    return {
+        "value": latest.get("value"),
+        "period": latest.get("period"),
+        "source": f"OECD SDMX {agency.split(',')[1].split('@')[0] if '@' in agency else agency}",
+    }
+
+
 async def _resolver_bis(spec: dict) -> Optional[dict]:
     """Resolver: BIS WS_CBPOL via DBnomics (used as policy-rate fallback)."""
     raw = await get_policy_rates(countries=spec["country"], limit=3)
@@ -5906,6 +5988,7 @@ _RESOLVERS = {
     "eurostat_press": _resolver_eurostat_press,
     "fred": _resolver_fred,
     "dbnomics": _resolver_dbnomics,
+    "oecd": _resolver_oecd,
     "ksh_stadat": _resolver_ksh_stadat,
     "ksh_flash": _resolver_ksh_flash,
     "scrape": _resolver_scrape,
