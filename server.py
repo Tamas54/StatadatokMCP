@@ -5070,7 +5070,8 @@ INDICATOR_RESOLVERS[("EA", "cpi")] = [
     # Eurostat hivatalos flash press release (ap = EA aggregate). A regex
     # célzottan az "up to / expected to be X.Y%" mintát fogja — NE az
     # "up from N.M% in previous month" reference-pontot.
-    {"type": "eurostat_press", "suffix": "ap",
+    {"type": "eurostat_press", "suffix": "ap", "historical": True,
+                                "component_label": "All-items HICP",
                                 "rx": r"annual\s+inflation[\s\S]{0,40}?(?:up\s+to|down\s+to|at|expected\s+to\s+be)\s+(\d+[,.]\d)\s*%"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.000000.4.ANR"},
     {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "EA"},
@@ -5100,12 +5101,14 @@ INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
 INDICATOR_RESOLVERS[("EA", "energy_cpi")] = [
     # A press release markdown-ja TÁBLÁZAT: "**Energy**\n<12 havi érték>\n**10.9e**".
     # Case-sensitive (?-i:) — a kisbetűs "energy" másik táblázatban szerepel.
-    {"type": "eurostat_press", "suffix": "ap",
+    {"type": "eurostat_press", "suffix": "ap", "historical": True,
+                                "component_label": "Energy",
                                 "rx": r"(?-i:\*\*Energy\*\*)[\s\S]*?\*\*(-?\d+[,.]?\d*)e?\*\*"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.NRGY00.4.ANR"},
 ]
 INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
-    {"type": "eurostat_press", "suffix": "ap",
+    {"type": "eurostat_press", "suffix": "ap", "historical": True,
+                                "component_label": "Services",
                                 "rx": r"(?-i:\*\*Services\*\*)[\s\S]*?\*\*(-?\d+[,.]?\d*)e?\*\*"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.SERV00.4.ANR"},
     {"type": "brave_search", "query": "euro area services inflation HICP {YYYY-MM}",
@@ -5113,7 +5116,8 @@ INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
                               "rx": r"[Ss]ervices[\s\S]{0,30}?(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("EA", "food_cpi")] = [
-    {"type": "eurostat_press", "suffix": "ap",
+    {"type": "eurostat_press", "suffix": "ap", "historical": True,
+                                "component_label": "Food",
                                 "rx": r"(?-i:\*\*Food[\s\S]{0,40}?\*\*)[\s\S]*?\*\*(-?\d+[,.]?\d*)e?\*\*"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.FOOD00.4.ANR"},
 ]
@@ -5766,6 +5770,105 @@ async def _resolver_brave_search(spec: dict) -> Optional[dict]:
     return res
 
 
+# Module-level cache for scrape results — press release URLs are immutable,
+# scraping them once per session is enough.
+_SCRAPE_CACHE: dict[tuple[str, str], dict] = {}
+
+# Cache for parsed Eurostat press release tables (URL → markdown text).
+_EUROSTAT_PRESS_MARKDOWN_CACHE: dict[str, str] = {}
+
+
+def _parse_eurostat_press_table(text: str, component_label: str) -> list[dict]:
+    """Parse a 6-7 month time series from an Eurostat HICP flash press release.
+
+    The markdown layout is a wide table:
+      Weights | Apr 25 | Nov 25 | Dec 25 | Jan 26 | Feb 26 | Mar 26 | Apr 26 | Apr 26-monthly
+      **All-items HICP** | 1000.0 | 2.2 | 2.1 | 2.0 | ... | **3.0e** | 0.6e
+      **Food** | ... | 2.5e | ...
+      **Energy** | 90.5 | -3.6 | ... | **10.9e** | 3.0e
+
+    We extract the headers (month-labels), then for the named component find
+    the row of values, and return [{period, value}, ...] for the annual-rate
+    columns only (skipping Weight and the monthly-rate column).
+    """
+    # Find month-header tokens: "Apr 25", "Nov 25", "Dec 25", ...
+    headers = re.findall(r"\*\*([A-Z][a-z]{2})\s+(\d{2})\*\*", text)
+    if not headers:
+        return []
+
+    # Convert month-abbrev to YYYY-MM
+    month_idx = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+                 "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+    periods: list[str] = []
+    for mon, yr in headers:
+        m_num = month_idx.get(mon)
+        if m_num:
+            periods.append(f"20{yr}-{m_num:02d}")
+
+    if not periods:
+        return []
+
+    # Find the component-row: after the **label** find values until next **label**
+    # The label MAY have additional words ("Food, alcohol & tobacco"), so use
+    # the leading part as anchor.
+    pattern = re.compile(
+        rf"(?-i:\*\*{re.escape(component_label)}\b[^*\n]*\*\*)([\s\S]*?)(?=\*\*[A-Z]|\Z)",
+        flags=re.DOTALL,
+    )
+    m = pattern.search(text)
+    if not m:
+        return []
+
+    body = m.group(1)
+    # Tokens that are values: optional minus, digits, optional comma/dot, digits, optional 'e' marker
+    # Strip markdown escapes for minus: "\-3.6" → "-3.6"
+    body = body.replace("\\-", "-")
+    value_tokens = re.findall(r"\*{0,2}(-?\d+[.,]\d+)e?\*{0,2}", body)
+    # Convert to floats
+    values: list[float] = []
+    for v in value_tokens:
+        try:
+            values.append(float(v.replace(",", ".")))
+        except ValueError:
+            continue
+
+    # Layout: first value = Weight (skip), then 1-per-header annual rates, last 1
+    # is monthly rate (skip). Headers may contain a duplicate Apr 26 for monthly.
+    # Heuristic: if there are exactly len(periods) values, treat all as annuals
+    # in order. If len(periods)+1, the first one is Weight. If len(periods)+2,
+    # Weight + monthly.
+    n_h = len(periods)
+    if len(values) >= n_h + 2:
+        annuals = values[1:n_h + 1]
+    elif len(values) >= n_h + 1:
+        annuals = values[1:n_h + 1]
+    elif len(values) >= n_h:
+        annuals = values[:n_h]
+    else:
+        # Not enough values for the header schema
+        annuals = values[:n_h]
+        periods = periods[:len(annuals)]
+
+    # The first header is typically Y-1 (year-ago, e.g. Apr 25); the last
+    # is current. Sort by period; expose as time_series.
+    pairs = list(zip(periods, annuals))
+    # Filter out far-back outlier (year-ago): keep only if consecutive
+    # Actually, we keep everything — the agent can decide which is relevant.
+    out = [{"period": p, "value": v} for p, v in pairs]
+    out.sort(key=lambda r: r["period"])
+    return out
+
+
+# Component-label mapping: indicator → markdown bold label in press release
+_EUROSTAT_PRESS_LABELS: dict[str, str] = {
+    "cpi":           "All-items HICP",
+    "core_cpi":      "All-items HICP excl. energy and unprocessed food",
+    "services_cpi":  "Services",
+    "energy_cpi":    "Energy",
+    "food_cpi":      "Food",
+}
+
+
 async def _resolver_eurostat_press(spec: dict) -> Optional[dict]:
     """Resolver: Eurostat newsroom press release scrape.
 
@@ -5789,7 +5892,10 @@ async def _resolver_eurostat_press(spec: dict) -> Optional[dict]:
     from datetime import datetime as _dt, timedelta as _td
     suffix = spec.get("suffix", "cp")
     rx = spec["rx"]
-    months_back = spec.get("months_back", 3)
+    # Historical mode: scrape ALL press releases (months_back back) and return
+    # a time_series. Default months_back: 3 (single-shot) or 8 (historical).
+    historical = bool(spec.get("historical", False))
+    months_back = spec.get("months_back", 8 if historical else 3)
     now = _dt.now()
 
     # Candidate publication dates. Reference-month logic differs by suffix:
@@ -5821,28 +5927,133 @@ async def _resolver_eurostat_press(spec: dict) -> Optional[dict]:
             url = f"https://ec.europa.eu/eurostat/web/products-euro-indicators/w/2-{day:02d}{m_idx:02d}{y}-{suffix}"
             cand.append((ref_label, url))
 
+    # Group candidates by reference month (deduplicate URLs)
+    by_period: dict[str, list[str]] = {}
     for ref_label, url in cand:
-        try:
-            result = await _scrape_extract_value(url, rx)
-        except Exception:
-            continue
-        if result and result.get("value") is not None:
-            result["period"] = ref_label
-            result["source"] = f"Eurostat press release ({suffix}) {ref_label}"
-            result["source_url"] = url
-            # Extract publication date from URL: 2-{DDMM}{YYYY}-{suffix}
-            url_tail = url.rsplit("/", 1)[1]
+        by_period.setdefault(ref_label, []).append(url)
+
+    async def _scrape_one_period(period: str, urls: list[str]) -> Optional[dict]:
+        """Probe URLs for one reference month; return first match."""
+        for url in urls:
+            cache_key = (url, rx)
+            cached = _SCRAPE_CACHE.get(cache_key)
+            if cached is not None:
+                if cached.get("_empty"):
+                    continue
+                return {"period": period, **cached}
             try:
-                # 2-30042026-ap → 30042026 → 2026-04-30
-                date_part = url_tail.split("-")[1]
-                if len(date_part) == 8:
-                    d, m, y = date_part[:2], date_part[2:4], date_part[4:]
-                    result["release_date"] = f"{y}-{m}-{d}"
-            except (IndexError, ValueError):
-                pass
-            result["is_flash"] = (suffix == "ap")
-            result["release_type"] = "flash_estimate" if suffix == "ap" else "final"
-            return result
+                result = await _scrape_extract_value(url, rx)
+            except Exception:
+                continue
+            if result and result.get("value") is not None:
+                # Extract release_date from URL: 2-{DDMM}{YYYY}-{suffix}
+                tail = url.rsplit("/", 1)[1]
+                release_date = None
+                try:
+                    date_part = tail.split("-")[1]
+                    if len(date_part) == 8:
+                        d, m, y = date_part[:2], date_part[2:4], date_part[4:]
+                        release_date = f"{y}-{m}-{d}"
+                except (IndexError, ValueError):
+                    pass
+                entry = {
+                    "value": result["value"],
+                    "source_url": url,
+                    "release_date": release_date,
+                    "is_flash": (suffix == "ap"),
+                    "release_type": "flash_estimate" if suffix == "ap" else "final",
+                }
+                _SCRAPE_CACHE[cache_key] = entry
+                return {"period": period, **entry}
+            else:
+                _SCRAPE_CACHE[cache_key] = {"_empty": True}
+        return None
+
+    if historical:
+        # Historical mode: scrape the LATEST press release and parse its
+        # 6-7 month table for the named component. Single brave-mcp call
+        # → full time_series. Falls back to per-period scrape if the
+        # component_label is not set or the table parse fails.
+        component_label = spec.get("component_label")
+        if component_label:
+            for ref_label, urls in sorted(by_period.items(), reverse=True):
+                for url in urls:
+                    # Cached markdown?
+                    text = _EUROSTAT_PRESS_MARKDOWN_CACHE.get(url)
+                    if text is None:
+                        if BRAVE_MCP_URL:
+                            r = await _brave_mcp_post("brave_scrape", {"url": url, "waitTime": 3000})
+                            text = (r.get("markdown") or r.get("text") or "") if r else ""
+                        if not text:
+                            client = await get_client()
+                            try:
+                                rr = await client.get(url, timeout=20.0, follow_redirects=True,
+                                                       headers={"User-Agent": "StatData/1.0"})
+                                if rr.status_code == 200:
+                                    text = re.sub(r"<[^>]+>", " ", rr.text)
+                            except Exception:
+                                text = ""
+                        if text:
+                            _EUROSTAT_PRESS_MARKDOWN_CACHE[url] = text
+                    if not text:
+                        continue
+                    ts = _parse_eurostat_press_table(text, component_label)
+                    if ts:
+                        latest = ts[-1]
+                        # Extract release_date from URL
+                        url_tail = url.rsplit("/", 1)[1]
+                        release_date = None
+                        try:
+                            dp = url_tail.split("-")[1]
+                            if len(dp) == 8:
+                                d, m, y = dp[:2], dp[2:4], dp[4:]
+                                release_date = f"{y}-{m}-{d}"
+                        except (IndexError, ValueError):
+                            pass
+                        return {
+                            "value": latest["value"],
+                            "period": latest["period"],
+                            "source": f"Eurostat press release ({suffix}) table {component_label} {len(ts)}pts",
+                            "source_url": url,
+                            "release_date": release_date,
+                            "is_flash": (suffix == "ap"),
+                            "release_type": "flash_estimate" if suffix == "ap" else "final",
+                            "time_series": ts,
+                        }
+            # Fall through to legacy per-period scrape if table parse failed
+
+        # Legacy historical mode: scrape every period in parallel
+        coros = [_scrape_one_period(p, urls) for p, urls in by_period.items()]
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        time_series = [r for r in results if isinstance(r, dict) and r.get("value") is not None]
+        if not time_series:
+            return None
+        time_series.sort(key=lambda r: r["period"])
+        latest = time_series[-1]
+        return {
+            "value": latest["value"],
+            "period": latest["period"],
+            "source": f"Eurostat press release ({suffix}) historical {len(time_series)}pts → {latest['period']}",
+            "source_url": latest.get("source_url"),
+            "release_date": latest.get("release_date"),
+            "is_flash": latest.get("is_flash", suffix == "ap"),
+            "release_type": latest.get("release_type"),
+            "time_series": time_series,
+        }
+
+    # Single-shot mode (legacy): first match wins
+    for period in sorted(by_period.keys(), reverse=True):
+        result = await _scrape_one_period(period, by_period[period])
+        if result:
+            return {
+                "value": result["value"],
+                "period": period,
+                "source": f"Eurostat press release ({suffix}) {period}",
+                "source_url": result.get("source_url"),
+                "release_date": result.get("release_date"),
+                "is_flash": result.get("is_flash", suffix == "ap"),
+                "release_type": result.get("release_type"),
+            }
     return None
 
 
@@ -6161,7 +6372,8 @@ async def get_macro_indicator(
                 ),
             }
             # Optional context fields propagated from resolver
-            for key in ("decision_date", "is_flash", "release_date", "release_type"):
+            for key in ("decision_date", "is_flash", "release_date",
+                        "release_type", "time_series"):
                 if result.get(key) is not None:
                     out_payload[key] = result[key]
             return json.dumps(out_payload, ensure_ascii=False, indent=2)
