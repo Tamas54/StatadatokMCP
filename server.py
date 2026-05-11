@@ -1876,7 +1876,7 @@ def _parse_ksh_csv(text: str, max_rows: int = 500) -> dict:
     # months at the TOP of the data array.
     rows = list(reversed(rows))
 
-    return {
+    out = {
         "title": title,
         "columns": headers,
         "row_count": len(rows),
@@ -1884,6 +1884,83 @@ def _parse_ksh_csv(text: str, max_rows: int = 500) -> dict:
         "truncated": truncated,
         "data": rows,
     }
+    # ─── derived blokk: pre-kalkulált YoY% (wide-mátrix tábláknál) ────────────
+    # A user kérése (vízió-doksi 1. pont): a számítást a Python csinálja, a
+    # narratívát az LLM. A latest_yoy blokk a current_year és prev_year közti
+    # ugyanazon hónap értékének YoY%-át adja, explicit 'formula' mezővel —
+    # így a sub-agent (Kimi/DeepSeek/GLM) NEM számolja maga a 24-oszlopos
+    # mátrixon, hanem kész értéket idéz.
+    derived = _compute_ksh_derived(rows, headers)
+    if derived:
+        out["derived"] = derived
+    return out
+
+
+# Hungarian month names in DESCENDING order (latest first). Used by the
+# get_ksh_stadat 'derived' calculator to find the latest non-empty cell.
+_HUN_MONTHS_DESC: list[tuple[str, int]] = [
+    ("december", 12), ("november", 11), ("október", 10), ("szeptember", 9),
+    ("augusztus", 8), ("július", 7), ("június", 6), ("május", 5),
+    ("április", 4), ("március", 3), ("február", 2), ("január", 1),
+]
+
+
+def _compute_ksh_derived(rows: list[dict], headers: list[str]) -> dict:
+    """Compute a 'derived.latest_yoy' block for KSH STADAT wide-matrix tables.
+
+    Logic:
+      - Find the year column ('Év' or similar)
+      - rows[0] is the most recent year (rows are DESC)
+      - rows[1] is presumably the previous year
+      - Iterate Hungarian months in DESC order, find the latest non-empty
+        column in BOTH rows that contains the same month label
+      - Compute YoY% = (current / prev - 1) * 100
+      - Return a structured block with current_period, base_period,
+        yoy_change_pct, and an explicit formula string
+    Returns {} if the table is not a wide-matrix or no comparable row found.
+    """
+    if not rows or len(rows) < 2:
+        return {}
+    year_col = next((c for c in headers if c and ("Év" in c or "év" in c.lower())), None)
+    if not year_col:
+        return {}
+    cur_row = rows[0]
+    prev_row = rows[1]
+    try:
+        cur_year = int(cur_row.get(year_col, ""))
+        prev_year = int(prev_row.get(year_col, ""))
+    except (ValueError, TypeError):
+        return {}
+    if cur_year - prev_year != 1:
+        return {}
+
+    for month_label, month_num in _HUN_MONTHS_DESC:
+        for col in headers:
+            if col == year_col or not col:
+                continue
+            if month_label not in col.lower():
+                continue
+            cur_val = cur_row.get(col)
+            prev_val = prev_row.get(col)
+            if (isinstance(cur_val, (int, float)) and isinstance(prev_val, (int, float))
+                    and prev_val != 0 and cur_val != 0):
+                yoy = round((cur_val / prev_val - 1) * 100, 2)
+                # Strip month name from column to get clean metric name
+                metric = col.replace(month_label, "").strip()
+                metric_capitalized = col.replace(month_label, "").strip().capitalize() or col
+                return {
+                    "latest_yoy": {
+                        "metric": metric or col,
+                        "current_period": f"{cur_year}-{month_num:02d}",
+                        "current_value": cur_val,
+                        "base_period": f"{prev_year}-{month_num:02d}",
+                        "base_value": prev_val,
+                        "yoy_change_pct": yoy,
+                        "formula": f"({cur_val} / {prev_val} - 1) * 100",
+                        "note": "Pre-computed by the StatData router from the KSH base-index. Quote yoy_change_pct in the brief.",
+                    }
+                }
+    return {}
 
 
 @mcp.tool()
