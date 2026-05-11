@@ -4826,18 +4826,23 @@ INDICATOR_RESOLVERS[("HU", "gdp")] = [
 INDICATOR_RESOLVERS[("HU", "policy_rate")] = [
     # Direct scrape attempts — JS-rendered, brave-mcp Puppeteer handles
     {"type": "scrape",       "url": "https://www.mnb.hu/Jegybanki_alapkamat_alakulasa",
-                              "rx": r"(?:alapkamat|irányadó kamat|jegybanki[\s\w]*kamat)[\s\S]{0,400}?(\d+[,.]\d{1,2})\s*%"},
+                              "rx": r"(?:alapkamat|irányadó kamat|jegybanki[\s\w]*kamat)[\s\S]{0,400}?(\d+[,.]\d{1,2})\s*%",
+                              "attach_decision_date": "HU"},
     {"type": "scrape",       "url": "https://www.mnb.hu/jegybanki-alapkamat-alakulasa",
-                              "rx": r"(?:alapkamat|irányadó kamat|jegybanki[\s\w]*kamat)[\s\S]{0,400}?(\d+[,.]\d{1,2})\s*%"},
+                              "rx": r"(?:alapkamat|irányadó kamat|jegybanki[\s\w]*kamat)[\s\S]{0,400}?(\d+[,.]\d{1,2})\s*%",
+                              "attach_decision_date": "HU"},
     # Hivatalos forrás preferencia: csak mnb.hu
     {"type": "brave_search", "query": "MNB irányadó kamat alapkamat {YYYY-MM} monetáris tanács döntés",
                               "site": "mnb.hu",
-                              "rx": r"(\d+[,.]\d{1,2})\s*%"},
+                              "rx": r"(\d+[,.]\d{1,2})\s*%",
+                              "attach_decision_date": "HU"},
     # Általános HU fallback (Portfolio/VG másodlagos, de friss)
     {"type": "brave_search", "query": "MNB irányadó kamat alapkamat {YYYY-MM} monetáris tanács döntés",
-                              "rx": r"(\d+[,.]\d{1,2})\s*%"},
+                              "rx": r"(\d+[,.]\d{1,2})\s*%",
+                              "attach_decision_date": "HU"},
     {"type": "brave_search", "query": "MNB base rate Hungary {YYYY-MM} policy decision",
-                              "rx": r"(\d+[,.]\d{1,2})\s*%"},
+                              "rx": r"(\d+[,.]\d{1,2})\s*%",
+                              "attach_decision_date": "HU"},
     {"type": "bis",          "country": "HU"},
 ]
 
@@ -5490,24 +5495,61 @@ async def _resolver_ksh_stadat(spec: dict) -> Optional[dict]:
     }
 
 
+# Central-bank Monetary Council meeting calendars (statically maintained).
+# When a resolver-spec has `attach_decision_date: "<country>"`, we look up the
+# most recent past meeting and attach it to the result as `decision_date`.
+_CENTRAL_BANK_MEETINGS: dict[str, list[str]] = {
+    # MNB Monetáris Tanács kamatmeghatározó ülései 2026
+    # https://www.mnb.hu/monetaris-politika/a-monetaris-tanacs
+    "HU": [
+        "2026-01-27", "2026-02-24", "2026-03-24", "2026-04-28",
+        "2026-05-26", "2026-06-23", "2026-07-21", "2026-08-25",
+        "2026-09-22", "2026-10-20", "2026-11-17", "2026-12-15",
+    ],
+}
+
+
+def _latest_past_meeting(country: str) -> Optional[str]:
+    """Return the most recent past Monetary Council meeting date for country."""
+    from datetime import datetime as _dt
+    schedule = _CENTRAL_BANK_MEETINGS.get(country.upper(), [])
+    if not schedule:
+        return None
+    today = _dt.now().strftime("%Y-%m-%d")
+    past = [d for d in schedule if d <= today]
+    return past[-1] if past else None
+
+
 async def _resolver_scrape(spec: dict) -> Optional[dict]:
     """Resolver: direct URL scrape + regex extraction. Set sign_aware=True
-    in the spec for Hungarian prose with adjacent direction verbs."""
+    in the spec for Hungarian prose with adjacent direction verbs.
+    Set attach_decision_date=<country> to append the most recent past
+    Monetary Council meeting date to the result (for policy_rate context).
+    """
     res = await _scrape_extract_value(
         spec["url"], spec["rx"],
         sign_aware=bool(spec.get("sign_aware", False)),
     )
     if res:
         res["source"] = f"scrape {spec['url']}"
+        if spec.get("attach_decision_date"):
+            md = _latest_past_meeting(spec["attach_decision_date"])
+            if md:
+                res["decision_date"] = md
     return res
 
 
 async def _resolver_brave_search(spec: dict) -> Optional[dict]:
-    """Resolver: brave_search (optionally site-filtered) + scrape + regex."""
+    """Resolver: brave_search (optionally site-filtered) + scrape + regex.
+    Supports attach_decision_date for policy-rate context."""
     q = _format_query_template(spec["query"])
     res = await _brave_search_extract(q, spec["rx"], site=spec.get("site", ""))
     if res:
         res["source"] = f"brave_search {q}"
+        if spec.get("attach_decision_date"):
+            md = _latest_past_meeting(spec["attach_decision_date"])
+            if md:
+                res["decision_date"] = md
     return res
 
 
@@ -5758,7 +5800,7 @@ async def get_macro_indicator(
             "value": result["value"], "period": period, "fresh": fresh,
         })
         if fresh:
-            return json.dumps({
+            out_payload = {
                 "country": country,
                 "indicator": indicator,
                 "value": result["value"],
@@ -5769,7 +5811,10 @@ async def get_macro_indicator(
                 "freshness_threshold_days": threshold,
                 "fallback_chain": [a["resolver"] for a in attempts],
                 "all_attempts": attempts,
-            }, ensure_ascii=False, indent=2)
+            }
+            if result.get("decision_date"):
+                out_payload["decision_date"] = result["decision_date"]
+            return json.dumps(out_payload, ensure_ascii=False, indent=2)
         # Stale but valid — keep as best fallback
         dt = _parse_period_to_date(period)
         if dt and (not best_stale or _parse_period_to_date(best_stale["period"]) < dt):
