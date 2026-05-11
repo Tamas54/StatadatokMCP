@@ -1910,6 +1910,60 @@ _HUN_MONTHS_DESC: list[tuple[str, int]] = [
 ]
 
 
+def _pivot_ksh_to_long(rows: list[dict], headers: list[str]) -> list[dict]:
+    """Convert a KSH STADAT wide-matrix table to long-format rows.
+
+    Wide:
+      {"Év": 2026, "Eredeti maginfláció január": 653.0, "Eredeti maginfláció február": 653.7, ...}
+    Long:
+      [{"year": 2026, "month": "január", "month_idx": 1, "metric": "Eredeti maginfláció", "value": 653.0},
+       {"year": 2026, "month": "február", "month_idx": 2, "metric": "Eredeti maginfláció", "value": 653.7}, ...]
+
+    Easier for LLM attention than 24-column matrices. Only month-bearing columns
+    are pivoted; year column is preserved as 'year', other non-month columns
+    become extra metric rows with no month.
+    """
+    if not rows:
+        return []
+    year_col = next((c for c in headers if c and ("Év" in c or "év" in c.lower())), None)
+    long_rows: list[dict] = []
+    for row in rows:
+        year_raw = row.get(year_col) if year_col else None
+        try:
+            year = int(str(year_raw).strip()[:4]) if year_raw is not None else None
+        except (ValueError, TypeError):
+            year = None
+        for col in headers:
+            if not col or col == year_col:
+                continue
+            val = row.get(col)
+            if val is None or val == "":
+                continue
+            # Detect Hungarian month name in column header
+            col_lower = col.lower()
+            month_label = None
+            month_idx = None
+            for hu_month, m_num in _HUN_MONTHS_DESC:
+                if hu_month in col_lower:
+                    month_label = hu_month
+                    month_idx = m_num
+                    break
+            # Metric name: strip month from column header
+            if month_label:
+                metric = col.replace(month_label, "").strip().rstrip("é").strip() or col
+            else:
+                metric = col
+            long_rows.append({
+                "year": year,
+                "month": month_label,
+                "month_idx": month_idx,
+                "period": f"{year}-{month_idx:02d}" if (year and month_idx) else (str(year) if year else None),
+                "metric": metric,
+                "value": val,
+            })
+    return long_rows
+
+
 def _compute_eurostat_derived(rows: list[dict]) -> dict:
     """Compute 'derived' YoY% / QoQ% for an Eurostat JSON-stat time series.
 
@@ -2114,6 +2168,7 @@ def _compute_ksh_derived(rows: list[dict], headers: list[str]) -> dict:
 async def get_ksh_stadat(
     table_code: str,
     max_rows: int = 200,
+    format: str = "wide",
 ) -> str:
     """Fetch data from KSH STADAT tables — Hungarian statistical time series.
 
@@ -2125,6 +2180,13 @@ async def get_ksh_stadat(
                     "gdp0001" (GDP), "mun0001" (employment), "ber0001" (wages).
                     Use search_datasets(query="...", source="ksh") to find codes.
         max_rows: Maximum rows to return (default: 200, max: 1000)
+        format: "wide" (default, native CSV layout with month columns) or
+                "long" (one row per year-month observation — easier for LLM
+                attention than 24-column matrices). Pl. ara0045 wide:
+                  {"Év": 2026, "Eredeti maginfláció január": 653.0, ...}
+                long:
+                  [{year: 2026, month: "január", month_idx: 1, period: "2026-01",
+                    metric: "Eredeti maginfláció", value: 653.0}, ...]
 
     Common table codes:
         ara0001 — Consumer price index (annual)
@@ -2180,6 +2242,13 @@ async def get_ksh_stadat(
         parsed = _parse_ksh_csv(text, max_rows)
         parsed["table_code"] = code
         parsed["url"] = url
+
+        # format='long': pivot the wide-matrix data to one row per observation
+        if format and format.lower() == "long":
+            long_rows = _pivot_ksh_to_long(parsed.get("data") or [], parsed.get("columns") or [])
+            parsed["format"] = "long"
+            parsed["data_long"] = long_rows
+            parsed["long_row_count"] = len(long_rows)
         # Use catalog description, but flag if CSV title doesn't match
         catalog_desc = KSH_STADAT_CATALOG.get(code, "")
         parsed["description"] = catalog_desc
