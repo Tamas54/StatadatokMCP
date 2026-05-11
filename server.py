@@ -4961,6 +4961,9 @@ INDICATOR_RESOLVERS[("EA", "trade_balance")] = [
 # ─── Pass 5: United States (FRED dominant) ─────────────────────────
 INDICATOR_RESOLVERS[("US", "cpi")] = [
     {"type": "fred",         "series_id": "CPIAUCSL", "units": "pc1"},
+    # DBnomics FRED-tükör fallback (FRED API 5xx esetén — nem transzformál, így YoY-t a router számolja)
+    {"type": "dbnomics",     "provider_code": "FRED", "dataset_code": "CPIAUCSL",
+                              "series_code": "CPIAUCSL", "compute_yoy": True},
     {"type": "scrape",       "url": "https://www.bls.gov/news.release/cpi.nr0.htm",
                               "rx": r"(\d+[,.]\d)\s*percent"},
     {"type": "brave_search", "query": "BLS US CPI inflation {YYYY-MM}",
@@ -4968,17 +4971,25 @@ INDICATOR_RESOLVERS[("US", "cpi")] = [
 ]
 INDICATOR_RESOLVERS[("US", "core_cpi")] = [
     {"type": "fred",         "series_id": "CPILFESL", "units": "pc1"},
+    {"type": "dbnomics",     "provider_code": "FRED", "dataset_code": "CPILFESL",
+                              "series_code": "CPILFESL", "compute_yoy": True},
     {"type": "brave_search", "query": "BLS US core CPI {YYYY-MM} excluding food energy",
                               "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
 ]
 INDICATOR_RESOLVERS[("US", "services_cpi")] = [
     {"type": "fred",         "series_id": "CUSR0000SAS", "units": "pc1"},
+    {"type": "dbnomics",     "provider_code": "FRED", "dataset_code": "CUSR0000SAS",
+                              "series_code": "CUSR0000SAS", "compute_yoy": True},
 ]
 INDICATOR_RESOLVERS[("US", "ppi")] = [
     {"type": "fred",         "series_id": "PPIACO", "units": "pc1"},
+    {"type": "dbnomics",     "provider_code": "FRED", "dataset_code": "PPIACO",
+                              "series_code": "PPIACO", "compute_yoy": True},
 ]
 INDICATOR_RESOLVERS[("US", "policy_rate")] = [
     {"type": "fred",         "series_id": "DFEDTARU"},  # Fed Funds Target Upper Bound
+    {"type": "dbnomics",     "provider_code": "FRED", "dataset_code": "DFEDTARU",
+                              "series_code": "DFEDTARU"},  # nyers level — kamat, nem YoY
     {"type": "scrape",       "url": "https://www.federalreserve.gov/monetarypolicy/openmarket.htm",
                               "rx": r"(\d+[,.]\d{1,2})\s*(?:to|–|-)?\s*(\d+[,.]\d{1,2})?\s*percent"},
     {"type": "brave_search", "query": "Fed Funds target rate FOMC decision {YYYY-MM}",
@@ -4986,28 +4997,40 @@ INDICATOR_RESOLVERS[("US", "policy_rate")] = [
 ]
 INDICATOR_RESOLVERS[("US", "unemployment")] = [
     {"type": "fred",         "series_id": "UNRATE"},
+    {"type": "dbnomics",     "provider_code": "FRED", "dataset_code": "UNRATE",
+                              "series_code": "UNRATE"},  # ráta, nyers level helyes
     {"type": "brave_search", "query": "BLS US unemployment rate {YYYY-MM}",
                               "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
 ]
 INDICATOR_RESOLVERS[("US", "gdp")] = [
     {"type": "fred",         "series_id": "GDPC1", "units": "pc1"},
+    {"type": "dbnomics",     "provider_code": "FRED", "dataset_code": "GDPC1",
+                              "series_code": "GDPC1", "compute_yoy": True},
     {"type": "brave_search", "query": "BEA US GDP growth {YYYY} quarterly",
                               "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
 ]
 INDICATOR_RESOLVERS[("US", "retail_trade")] = [
     {"type": "fred",         "series_id": "RSAFS", "units": "pc1"},
+    {"type": "dbnomics",     "provider_code": "FRED", "dataset_code": "RSAFS",
+                              "series_code": "RSAFS", "compute_yoy": True},
 ]
 INDICATOR_RESOLVERS[("US", "industrial_production")] = [
     {"type": "fred",         "series_id": "INDPRO", "units": "pc1"},
+    {"type": "dbnomics",     "provider_code": "FRED", "dataset_code": "INDPRO",
+                              "series_code": "INDPRO", "compute_yoy": True},
 ]
 INDICATOR_RESOLVERS[("US", "wages")] = [
-    {"type": "fred",         "series_id": "CES0500000003"},  # Average hourly earnings, USD (level — we report level, agent computes YoY)
-    {"type": "fred",         "series_id": "ECIWAG", "units": "pc1"},  # Employment Cost Index YoY%
+    {"type": "fred",         "series_id": "CES0500000003"},
+    {"type": "fred",         "series_id": "ECIWAG", "units": "pc1"},
+    {"type": "dbnomics",     "provider_code": "FRED", "dataset_code": "CES0500000003",
+                              "series_code": "CES0500000003"},
     {"type": "brave_search", "query": "BLS US average hourly earnings wages {YYYY-MM} year-over-year",
                               "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
 ]
 INDICATOR_RESOLVERS[("US", "house_prices")] = [
-    {"type": "fred",         "series_id": "CSUSHPISA", "units": "pc1"},  # Case-Shiller national YoY%
+    {"type": "fred",         "series_id": "CSUSHPISA", "units": "pc1"},
+    {"type": "dbnomics",     "provider_code": "FRED", "dataset_code": "CSUSHPISA",
+                              "series_code": "CSUSHPISA", "compute_yoy": True},
 ]
 
 # ─── Pass 6: UK ───────────────────────────────────────────────────
@@ -5536,6 +5559,77 @@ async def _resolver_ksh_flash(spec: dict) -> Optional[dict]:
     return None
 
 
+async def _resolver_dbnomics(spec: dict) -> Optional[dict]:
+    """Resolver: DBnomics series. Mainly used as FRED/ECB-mirror fallback when
+    the direct API has an outage.
+
+    spec keys:
+        provider_code, dataset_code, series_code (required)
+        compute_yoy: if True, take last 13 monthly obs and compute YoY%
+                      (current / 12-months-ago - 1) × 100. Useful when the
+                      DBnomics mirror only has level series and the direct
+                      API would have transformed it (e.g. FRED units=pc1).
+    """
+    args = {
+        "provider_code": spec["provider_code"],
+        "dataset_code": spec["dataset_code"],
+        "series_code": spec.get("series_code", ""),
+        "max_obs": 24 if spec.get("compute_yoy") else 6,
+    }
+    raw = await dbnomics_series(**{k: v for k, v in args.items() if v})
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    series = d.get("series") or []
+    if not series:
+        return None
+    s0 = series[0]
+    obs = s0.get("observations") or []
+    if not obs:
+        return None
+    # observations is list of {period, value}
+    obs = [o for o in obs if o.get("value") is not None]
+    if not obs:
+        return None
+    obs.sort(key=lambda o: str(o.get("period", "")))
+
+    if spec.get("compute_yoy") and len(obs) >= 13:
+        latest = obs[-1]
+        # Find the obs ~12 months earlier with same calendar month
+        latest_period = str(latest["period"])
+        target_year = None
+        if len(latest_period) >= 7 and latest_period[4] == "-":
+            try:
+                target_year = int(latest_period[:4]) - 1
+            except ValueError:
+                pass
+        prev = None
+        if target_year:
+            target_period = f"{target_year}{latest_period[4:]}"
+            for o in obs:
+                if str(o.get("period", "")) == target_period:
+                    prev = o
+                    break
+        if prev is None:
+            prev = obs[-13]  # fall back to 13 positions back
+        if prev.get("value"):
+            yoy = round((float(latest["value"]) / float(prev["value"]) - 1) * 100, 2)
+            return {
+                "value": yoy,
+                "period": latest["period"],
+                "source": f"DBnomics {spec['provider_code']}/{spec['dataset_code']} (YoY% from levels)",
+                "level_latest": latest["value"],
+                "level_prev_year": prev["value"],
+            }
+
+    return {
+        "value": obs[-1]["value"],
+        "period": obs[-1]["period"],
+        "source": f"DBnomics {spec['provider_code']}/{spec['dataset_code']}",
+    }
+
+
 async def _resolver_bis(spec: dict) -> Optional[dict]:
     """Resolver: BIS WS_CBPOL via DBnomics (used as policy-rate fallback)."""
     raw = await get_policy_rates(countries=spec["country"], limit=3)
@@ -5558,6 +5652,7 @@ _RESOLVERS = {
     "ecb": _resolver_ecb,
     "eurostat": _resolver_eurostat,
     "fred": _resolver_fred,
+    "dbnomics": _resolver_dbnomics,
     "ksh_stadat": _resolver_ksh_stadat,
     "ksh_flash": _resolver_ksh_flash,
     "scrape": _resolver_scrape,
