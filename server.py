@@ -4757,8 +4757,11 @@ INDICATOR_RESOLVERS[("HU", "food_cpi")] = [
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.FOOD00.4.ANR"},
 ]
 INDICATOR_RESOLVERS[("HU", "energy_cpi")] = [
-    {"type": "ksh_flash",    "topic": "far",
-                              "rx": r"háztartási\s+energi[áa](?:ért)?\s+(\d+[,.]\d)\s*%"},
+    # KSH "A háztartási energiáért 0,4, ezen belül ... %-kal kevesebbet/többet
+    # fizettek" — the number comes right after "energiáért", but the directional
+    # verb is at the end of the enumeration. sign-aware with 100-char suffix.
+    {"type": "ksh_flash",    "topic": "far", "sign_aware": True,
+                              "rx": r"háztartási\s+energi[áa](?:ért)?\s+(\d+[,.]\d)"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.NRGY00.4.ANR"},
 ]
 INDICATOR_RESOLVERS[("HU", "services_cpi")] = [
@@ -5173,12 +5176,30 @@ async def _brave_mcp_post(tool_name: str, arguments: dict, timeout: float = 90.0
         return None
 
 
-async def _scrape_extract_value(url: str, rx: str) -> Optional[dict]:
+# Hungarian directional words that indicate a NEGATIVE percentage change in
+# KSH-style prose ("X %-kal csökkent / mérséklődött / olcsóbb / kevesebbet").
+_NEGATIVE_WORDS: tuple[str, ...] = (
+    "csökkent", "csökkentek", "csökkenés", "csökkentett",
+    "kevesebb", "kevesebbet", "kevesebbért",
+    "olcsóbb", "olcsóbbak",
+    "mérséklődött", "mérséklődtek",
+    "alacsonyabb", "alacsonyabban",
+)
+
+
+async def _scrape_extract_value(url: str, rx: str, sign_aware: bool = False) -> Optional[dict]:
     """Scrape a URL (JS-rendered via brave-mcp if available, else plain httpx),
     and extract the first regex match as a float value. Tries multiple
     encodings (utf-8 → iso-8859-2 → windows-1250) because Hungarian sites
     often serve latin2-encoded HTML without a BOM and httpx's auto-decode
     mangles characters like 'ő' / 'ű'.
+
+    If sign_aware=True (opt-in per resolver), the immediate 30-character
+    suffix of the match is scanned for Hungarian negative-direction words
+    ("csökkent", "kevesebb", "olcsóbb", "mérséklődött") — if any are
+    present, the value is negated. KSH prose conventionally states
+    "X %-kal csökkent" without a minus sign. Use sparingly, only for
+    indicators where the verb is reliably adjacent (e.g. energy prices).
     """
     text = ""
     if BRAVE_MCP_URL:
@@ -5225,6 +5246,16 @@ async def _scrape_extract_value(url: str, rx: str) -> Optional[dict]:
         val = float(raw)
     except ValueError:
         return None
+
+    if sign_aware:
+        # Inspect the 100-character suffix after the match for Hungarian
+        # negative-direction verbs. KSH prose puts the verb at the end of
+        # an enumeration: "A háztartási energiáért 0,4, ezen belül a
+        # vezetékes gázért 3,1 %-kal kevesebbet fizettek" — the "kevesebbet"
+        # applies to BOTH numbers, sitting ~70 characters after the first.
+        ctx = text[m.end():m.end() + 100].lower()
+        if any(neg in ctx for neg in _NEGATIVE_WORDS):
+            val = -val
 
     from datetime import datetime as _dt
     return {
@@ -5404,8 +5435,12 @@ async def _resolver_ksh_stadat(spec: dict) -> Optional[dict]:
 
 
 async def _resolver_scrape(spec: dict) -> Optional[dict]:
-    """Resolver: direct URL scrape + regex extraction."""
-    res = await _scrape_extract_value(spec["url"], spec["rx"])
+    """Resolver: direct URL scrape + regex extraction. Set sign_aware=True
+    in the spec for Hungarian prose with adjacent direction verbs."""
+    res = await _scrape_extract_value(
+        spec["url"], spec["rx"],
+        sign_aware=bool(spec.get("sign_aware", False)),
+    )
     if res:
         res["source"] = f"scrape {spec['url']}"
     return res
@@ -5454,9 +5489,10 @@ async def _resolver_ksh_flash(spec: dict) -> Optional[dict]:
         url = f"https://www.ksh.hu/gyorstajekoztatok/{topic}/{topic}{yy}{mm}.html"
         candidates.append((f"{y}-{mm}", url))
 
+    sign_aware = bool(spec.get("sign_aware", False))
     for period, url in candidates:
         try:
-            result = await _scrape_extract_value(url, rx)
+            result = await _scrape_extract_value(url, rx, sign_aware=sign_aware)
         except Exception:
             continue
         if result and result.get("value") is not None:
