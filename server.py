@@ -5566,7 +5566,10 @@ async def _resolver_ksh_flash(spec: dict) -> Optional[dict]:
     from datetime import datetime as _dt, timedelta as _td
     topic = spec["topic"]
     rx = spec["rx"]
-    max_months_back = spec.get("max_back", 4)
+    # 2026-05-11: max_back 4→2 (#186 transport errors). A KSH gyorstájékoztatók
+    # tipikusan a megelőző hónapra publikálnak; 2 hónap visszamenőleg (current
+    # + previous) elég a friss-adatra, és gyorsabb mint 4 hónap brave-scrape.
+    max_months_back = spec.get("max_back", 2)
     now = _dt.now()
     # Generate candidate URLs from current month back to N months prior
     seen = set()
