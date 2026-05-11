@@ -4941,6 +4941,19 @@ INDICATOR_RESOLVERS[("HU", "gdp")] = [
     {"type": "brave_search", "query": "KSH GDP gyorsbecslés {YYYY} negyedév",
                               "rx": r"(\d+[,.]\d)\s*%"},
 ]
+# HU GDP growth — KSH "Bruttó hazai termék (GDP) előzetes adata" oldal kanonikus
+# forrás a havi/negyedéves YoY% számokra. URL stabil, regex célzott.
+INDICATOR_RESOLVERS[("HU", "gdp_growth")] = [
+    {"type": "scrape",       "url": "https://www.ksh.hu/brutto_hazai_termek_gdp_elozetes_adata",
+                              "rx": r"(\d+[,.]\d)\s*%[\s\-]*kal\s+meg.{0,10}haladt"},
+    {"type": "scrape",       "url": "https://www.ksh.hu/brutto_hazai_termek_gdp_elozetes_adata",
+                              "rx": r"gazda?s?á?g[\s\S]{0,50}?(\d+[,.]\d)\s*%"},
+    {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
+                              "filters": "na_item=B1GQ&unit=CLV_PCH_PRE&s_adj=SCA"},
+    {"type": "brave_search", "query": "KSH GDP {YYYY} negyedév előzetes adat",
+                              "site": "ksh.hu",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
 INDICATOR_RESOLVERS[("HU", "policy_rate")] = [
     # Direct scrape attempts — JS-rendered, brave-mcp Puppeteer handles
     {"type": "scrape",       "url": "https://www.mnb.hu/Jegybanki_alapkamat_alakulasa",
