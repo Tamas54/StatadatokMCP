@@ -639,5 +639,198 @@
     "call_count": 0,
     "last_used": null,
     "source": "seed"
+  },
+  {
+    "id": "ecb_dfr",
+    "keywords": [
+      "ecb",
+      "kamat",
+      "alapkamat",
+      "policy rate",
+      "deposit facility",
+      "dfr",
+      "eurozóna",
+      "euró",
+      "frankfurt"
+    ],
+    "provider": "ECB",
+    "dataset": "FM",
+    "dimensions": {
+      "key": "D.U2.EUR.4F.KR.DFR.LEV"
+    },
+    "note": "ECB Deposit Facility Rate — the operational euro-area policy rate since 2019. Daily, %.",
+    "call_count": 1,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "ecb_mrr",
+    "keywords": [
+      "ecb",
+      "kamat",
+      "main refinancing",
+      "mrr",
+      "irányadó",
+      "eurozóna"
+    ],
+    "provider": "ECB",
+    "dataset": "FM",
+    "dimensions": {
+      "key": "D.U2.EUR.4F.KR.MRR_FR.LEV"
+    },
+    "note": "ECB Main Refinancing Operations fixed rate — the headline corridor midpoint. Daily, %.",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "hicp_services_HU_ecb",
+    "keywords": [
+      "szolgáltatás",
+      "services",
+      "infláció",
+      "inflation",
+      "hicp",
+      "magyarország",
+      "hungary",
+      "havi"
+    ],
+    "provider": "ECB",
+    "dataset": "ICP",
+    "dimensions": {
+      "key": "M.HU.N.SERV00.4.ANR"
+    },
+    "note": "ECB ICP — HU HICP services, monthly YoY%. Service inflation breakdown that KSH STADAT only publishes annually.",
+    "call_count": 1,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "hicp_core_HU_ecb",
+    "keywords": [
+      "maginfláció",
+      "core inflation",
+      "core hicp",
+      "magyarország",
+      "hungary",
+      "havi",
+      "kép"
+    ],
+    "provider": "ECB",
+    "dataset": "ICP",
+    "dimensions": {
+      "key": "M.HU.N.XEF000.4.ANR"
+    },
+    "note": "ECB ICP — HU core HICP (excl. energy & food), monthly YoY%.",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "hicp_overall_HU_ecb",
+    "keywords": [
+      "infláció",
+      "inflation",
+      "hicp",
+      "cpi",
+      "fogyasztói árak",
+      "magyarország",
+      "hungary"
+    ],
+    "provider": "ECB",
+    "dataset": "ICP",
+    "dimensions": {
+      "key": "M.HU.N.000000.4.ANR"
+    },
+    "note": "ECB ICP — HU HICP overall, monthly YoY%. For 2026-on data when KSH STADAT lags, prefer get_flash_releases first then ECB.",
+    "call_count": 1,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "hicp_flash_EA_ecb",
+    "keywords": [
+      "flash",
+      "hicp",
+      "eurozóna",
+      "euro area",
+      "infláció",
+      "inflation",
+      "preliminary"
+    ],
+    "provider": "ECB",
+    "dataset": "ICP",
+    "dimensions": {
+      "key": "M.U2.N.000000.4.ANR"
+    },
+    "note": "ECB ICP — Euro area HICP overall (includes flash estimates). Monthly YoY%.",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "eur_huf_daily_ecb",
+    "keywords": [
+      "eur",
+      "huf",
+      "forint",
+      "árfolyam",
+      "exchange rate",
+      "ecb reference",
+      "napi"
+    ],
+    "provider": "ECB",
+    "dataset": "EXR",
+    "dimensions": {
+      "key": "D.HUF.EUR.SP00.A"
+    },
+    "note": "ECB reference rate EUR/HUF, daily. Note: ECB uses 1 EUR = X HUF convention.",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "bund_10y_ecb",
+    "keywords": [
+      "bund",
+      "10y",
+      "10 év",
+      "yield",
+      "hozam",
+      "kötvény",
+      "maastricht",
+      "eurozóna"
+    ],
+    "provider": "ECB",
+    "dataset": "IRS",
+    "dimensions": {
+      "key": "M.U2.L.L40.CI.0000.EUR.N.Z"
+    },
+    "note": "Euro area 10Y government bond yield (Maastricht convergence criterion), monthly %.",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
+  },
+  {
+    "id": "hun_10y_ecb",
+    "keywords": [
+      "10y",
+      "10 év",
+      "yield",
+      "hozam",
+      "magyar államkötvény",
+      "magyar bond",
+      "maastricht",
+      "hungary"
+    ],
+    "provider": "ECB",
+    "dataset": "IRS",
+    "dimensions": {
+      "key": "M.HU.L.L40.CI.0000.HUF.N.Z"
+    },
+    "note": "HU 10Y government bond yield (Maastricht convergence criterion), monthly %.",
+    "call_count": 0,
+    "last_used": null,
+    "source": "seed"
   }
 ]

@@ -22,6 +22,11 @@ This repo is the **StatData MCP** server (formerly "Eurostat-KSH-DBnomics" / "Ma
 - FastMCP server name: `StatData`
 - Logger: `statdata`
 - Railway service: `statdata` (dashboard name; URL unchanged at `https://makronommcp-production.up.railway.app`)
-- 14 tools (search_datasets, get_eurostat_data, dbnomics_search/series, get_ksh_stadat/hvd, yfinance, mnb_rates, calculate, recipe_book, forecast, get_fred_data, get_economic_calendar, get_policy_rates)
+- 16 tools (search_datasets, get_eurostat_data, dbnomics_search/series, get_ksh_stadat/hvd, yfinance, mnb_rates, calculate, recipe_book, forecast, get_fred_data, get_economic_calendar, get_policy_rates, **get_ecb_data**, **get_flash_releases**)
 
-The 14 tools are also pass-through-exposed via the Claus Bridge MCP (`~/Claus/claus-bridge-mcp/`) as `statdata_*` tools, plus a `data_context` parameter on `ai_query`/`ai_task` for preset injection (`hu_macro`, `us_macro`, `eu_macro`, `markets`, `tech_stocks`, `commodities`, `fx_majors`, `bonds`, `inflation_focus`, `emerging_markets`).
+Newest additions (2026-05-11):
+- `get_ecb_data(dataset, key, ...)` — direct ECB Data Portal SDMX 2.1 client (data-api.ecb.europa.eu). Same data as ECB Statistical Data Warehouse but typically 1–24h fresher than DBnomics' ECB mirror. Covers ICP (HICP incl. services/core/energy/food sub-aggregates), EXR (EUR reference rates), FM (policy rates DFR/MRR/MLFR), IRS (10Y Maastricht yields), BSI/MIR/STS etc. `get_policy_rates(countries=...)` automatically overlays the latest daily ECB DFR for `XM`, so the euro-area rate is never stale.
+- `get_flash_releases(query, source, ...)` — KSH gyorstájékoztatók RSS + Eurostat news/press-release Atom feed, cached in SQLite (6h TTL). Use this when official APIs lag (e.g. HU 2026 HICP not yet in Eurostat) — flash releases drop 1–3 days earlier.
+- `search_datasets` extended with `source="ecb"` (curated catalog of ECB dataflows + common series keys) and `source="flash"`.
+
+The tools are also pass-through-exposed via the Claus Bridge MCP (`~/Claus/claus-bridge-mcp/`) as `statdata_*` tools, plus a `data_context` parameter on `ai_query`/`ai_task` for preset injection (`hu_macro`, `us_macro`, `eu_macro`, `markets`, `tech_stocks`, `commodities`, `fx_majors`, `bonds`, `inflation_focus`, `emerging_markets`). If you want the new ECB/flash tools usable through Bridge, add the `statdata_ecb` and `statdata_flash` pass-throughs in claus-bridge-mcp/server.py.

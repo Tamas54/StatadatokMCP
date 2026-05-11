@@ -5,8 +5,8 @@ Unified MCP connector for European, Hungarian, and global statistical data
 (Eurostat, KSH, DBnomics, MNB, FRED, BIS, Yahoo Finance).
 Deployable on Railway with Streamable HTTP transport.
 
-14 Tools:
-  - search_datasets: Search Eurostat, KSH, and/or DBnomics datasets by keyword
+16 Tools:
+  - search_datasets: Search Eurostat, KSH, DBnomics, ECB, and flash releases by keyword
   - get_eurostat_data: Fetch data from Eurostat (JSON-stat API)
   - dbnomics_search: Search datasets across DBnomics + list providers (mode="providers")
   - dbnomics_series: Fetch time series data from DBnomics
@@ -20,6 +20,11 @@ Deployable on Railway with Streamable HTTP transport.
   - get_fred_data: FRED US economic data
   - get_economic_calendar: Upcoming data releases (FRED, ECB, Eurostat)
   - get_policy_rates: Central bank policy rates (BIS) — ECB, MNB, CNB, NBP, BNR, etc.
+                      + direct ECB Data Portal DFR/MRR/MLFR overlay (always fresh).
+  - get_ecb_data: ECB Data Portal direct SDMX (HICP incl. services, EUR FX,
+                  ECB rates, money market, MFI balance sheets, govt bond yields).
+  - get_flash_releases: KSH gyorstájékoztatók + Eurostat news releases
+                        (the freshest HU/EA flash macro numbers before APIs update).
   Sub-tool: get_eurostat_data(dataset_code="COMEXT") — Eurostat COMEXT HS-level commodity trade
 """
 
@@ -601,15 +606,23 @@ async def search_datasets(
     source: str = "all",
     limit: int = 20,
 ) -> str:
-    """Search for statistical datasets by keyword across Eurostat, KSH, and DBnomics.
+    """Search for statistical datasets by keyword across all indexed sources.
+
+    Sources covered: Eurostat, KSH (STADAT + HVD + flash releases), DBnomics,
+    ECB (curated catalog of dataflows and common series keys), and Eurostat
+    flash releases (news/press releases).
 
     Args:
         query: Search keywords (e.g. "GDP Hungary", "inflation", "unemployment")
-        source: Data source - "eurostat", "ksh", "dbnomics", "all", or "both" (eurostat+ksh). Default: "all"
+        source: Data source -
+                "eurostat" | "ksh" | "dbnomics" | "ecb" | "flash" | "all" | "both" (eu+ksh).
+                Default: "all"
         limit: Maximum results per source (default: 20)
 
     Returns:
-        JSON with matching datasets including codes/IDs and titles.
+        JSON with matching datasets including codes/IDs and titles. For ECB
+        results the 'series_key' field is the SDMX key usable directly with
+        get_ecb_data(dataset=..., key=...).
     """
     # Auto-trigger KSH scan on first search if DB is stale
     global _scan_scheduled
@@ -634,11 +647,11 @@ async def search_datasets(
     if source == "both":
         sources = {"eurostat", "ksh"}
     elif source == "all":
-        sources = {"eurostat", "ksh", "dbnomics"}
+        sources = {"eurostat", "ksh", "dbnomics", "ecb", "flash"}
     else:
         sources = {source}
 
-    results = {"eurostat": [], "ksh": [], "dbnomics": []}
+    results = {"eurostat": [], "ksh": [], "dbnomics": [], "ecb": [], "flash": []}
 
     if "eurostat" in sources:
         toc = await _load_eurostat_toc()
@@ -701,6 +714,46 @@ async def search_datasets(
                 })
         except Exception as e:
             logger.error(f"DBnomics search failed: {e}")
+
+    if "ecb" in sources:
+        keywords = query.lower().split()
+        ecb_scored: list[tuple] = []
+        # Match against curated dataflow descriptions
+        for code, desc in ECB_DATAFLOWS.items():
+            text = f"{code} {desc}".lower()
+            score = sum(1 for kw in keywords if kw in text)
+            if score > 0:
+                ecb_scored.append((score, {
+                    "dataset": code,
+                    "name": desc,
+                    "tool": "get_ecb_data",
+                    "source": "ecb",
+                    "hint": f"get_ecb_data(dataset='{code}', key='<series_key>')",
+                }))
+        # Match against curated series keys (more specific)
+        for series, desc in ECB_SERIES_CATALOG.items():
+            text = f"{series} {desc}".lower()
+            score = sum(1 for kw in keywords if kw in text)
+            if score > 0:
+                dataset, _, key = series.partition("/")
+                ecb_scored.append((score + 1, {  # +1 bias: specific series > dataset
+                    "dataset": dataset,
+                    "series_key": key,
+                    "description": desc,
+                    "tool": "get_ecb_data",
+                    "source": "ecb",
+                    "hint": f"get_ecb_data(dataset='{dataset}', key='{key}')",
+                }))
+        ecb_scored.sort(key=lambda x: -x[0])
+        results["ecb"] = [e for _, e in ecb_scored[:limit]]
+
+    if "flash" in sources:
+        # Refresh both feeds opportunistically (TTL-gated, fast no-op when cached)
+        try:
+            await _refresh_flash_all(force=False)
+        except Exception:
+            pass
+        results["flash"] = _search_flash_db(query, source="all", limit=limit)
 
     # Remove empty source keys
     results = {k: v for k, v in results.items() if v}
@@ -3802,9 +3855,85 @@ async def get_policy_rates(
         except Exception as e:
             logger.warning("Eurostat policy_proxy fallback failed: %s", e)
 
+    # For the euro area (XM) ECB DFR is the actual policy rate. BIS publishes
+    # this monthly and lags up to 4 weeks; we always overlay the latest daily
+    # value from the ECB Data Portal so XM is never stale.
+    if "XM" in codes:
+        try:
+            ecb_rates = await _fetch_ecb_policy_rates()
+            if ecb_rates:
+                out.setdefault("ecb_direct", {})
+                out["ecb_direct"] = {
+                    "note": (
+                        "Direct daily values from ECB Data Portal (data-api.ecb.europa.eu). "
+                        "DFR = Deposit Facility Rate (the operational policy rate since "
+                        "the 2019 corridor reform). MRR_FR = Main Refinancing Operations "
+                        "fixed rate. MLFR = Marginal Lending Facility Rate."
+                    ),
+                    **ecb_rates,
+                }
+                # Overlay XM current_rate with the fresh DFR so summary reflects truth
+                dfr = ecb_rates.get("deposit_facility_rate")
+                if isinstance(dfr, dict) and dfr.get("value") is not None:
+                    xm = out["rates"].setdefault("XM", {})
+                    xm["current_rate_ecb_direct"] = dfr["value"]
+                    xm["ecb_as_of"] = dfr.get("period")
+                    # Replace the summary line for XM with the fresh ECB DFR
+                    for i, line in enumerate(summary):
+                        if line.startswith("Euro area"):
+                            summary[i] = (
+                                f"Euro area (ECB DFR): {dfr['value']}% "
+                                f"({dfr.get('period')}) [direct from ECB]"
+                            )
+                            break
+        except Exception as e:
+            logger.warning("ECB direct policy rate fetch failed: %s", e)
+
     if notes:
         out["staleness_notes"] = notes
     return json.dumps(out, ensure_ascii=False, indent=2)
+
+
+async def _fetch_ecb_policy_rates() -> dict:
+    """Fetch the three ECB policy rates directly from ECB Data Portal.
+
+    DFR (Deposit Facility Rate) is the operational policy rate since 2019.
+    MRR_FR (Main Refi fixed rate) and MLFR (Marginal Lending Facility) define
+    the corridor. Returns the most recent observation for each.
+    """
+    client = await get_client()
+    rate_keys = {
+        "deposit_facility_rate": "FM/D.U2.EUR.4F.KR.DFR.LEV",
+        "main_refinancing_rate": "FM/D.U2.EUR.4F.KR.MRR_FR.LEV",
+        "marginal_lending_rate": "FM/D.U2.EUR.4F.KR.MLFR.LEV",
+    }
+    out: dict = {}
+
+    async def _one(name: str, path: str) -> tuple:
+        url = f"{ECB_BASE}/{path}"
+        try:
+            r = await client.get(
+                url,
+                params={"format": "jsondata", "lastNObservations": 1},
+                headers={"Accept": "application/json"},
+                timeout=15.0,
+            )
+            if r.status_code != 200:
+                return name, None
+            parsed = _parse_ecb_jsondata(r.json(), max_obs=1)
+            obs = parsed["observations"]
+            if not obs:
+                return name, None
+            return name, {"value": obs[-1]["value"], "period": obs[-1]["period"]}
+        except Exception as e:
+            logger.warning("ECB rate fetch (%s) failed: %s", name, e)
+            return name, None
+
+    results = await asyncio.gather(*[_one(n, p) for n, p in rate_keys.items()])
+    for name, val in results:
+        if val is not None:
+            out[name] = val
+    return out
 
 
 async def _fetch_eurostat_policy_proxy(country_codes: list[str]) -> dict:
@@ -3849,6 +3978,522 @@ async def _fetch_eurostat_policy_proxy(country_codes: list[str]) -> dict:
             logger.warning("Eurostat proxy fetch failed for %s: %s", c, e)
             continue
     return proxy_out
+
+
+# ---------------------------------------------------------------------------
+# ECB Data Portal (direct SDMX 2.1 API)
+# ---------------------------------------------------------------------------
+# Public, no auth. Same backend as the ECB Statistical Data Warehouse and
+# DBnomics' ECB mirror — but typically 1–24h fresher than DBnomics' nightly
+# crawl, and exposes the full ECB taxonomy directly (ICP item codes, FM rate
+# IDs, BSI monetary aggregates, BLS bank lending survey, etc.).
+ECB_BASE = "https://data-api.ecb.europa.eu/service/data"
+
+# Hand-curated catalog of frequently used ECB dataflows. The full ECB
+# catalog has ~70 dataflows; this is the subset most relevant for
+# HU/EA macro analysis. search_datasets uses this as a static index.
+ECB_DATAFLOWS: dict[str, str] = {
+    "ICP": "Indices of Consumer Prices (HICP, harmonized inflation)",
+    "EXR": "Exchange rates (ECB reference rates, daily/monthly)",
+    "FM": "Financial markets (policy rates, EONIA/€STR, money market)",
+    "BSI": "Balance Sheet Items (monetary aggregates M1/M2/M3, MFI balance sheets)",
+    "MIR": "MFI Interest Rates (bank lending/deposit rates by country)",
+    "BLS": "Bank Lending Survey (credit standards, demand for loans)",
+    "IRS": "Long-term interest rates (Maastricht convergence criterion)",
+    "STS": "Short-term statistics (industrial production, retail trade, PPI)",
+    "CISS": "Composite Indicator of Systemic Stress (financial stress index)",
+    "GFS": "Government Finance Statistics (deficit, debt, EDP)",
+    "MNA": "National Accounts (quarterly GDP, ESA 2010)",
+    "QSA": "Quarterly Sector Accounts (households, corporates, government)",
+    "SPF": "Survey of Professional Forecasters (inflation/GDP expectations)",
+    "RAI": "Residential property prices (House Price Indices)",
+    "CPP": "Commercial property prices",
+    "BOP": "Balance of payments",
+    "TRD": "International Trade",
+    "YC": "Yield curve (government bond zero-coupon yield curves)",
+    "IVF": "Investment Funds (IF balance sheets, flows)",
+    "PSS": "Payment Systems (TARGET2, retail payments)",
+}
+
+# Commonly needed ECB series keys — used by search_datasets so AI agents
+# can find them and by the recipe seeding logic below.
+ECB_SERIES_CATALOG: dict[str, str] = {
+    # === HICP (Hungary + euro area) ===
+    "ICP/M.HU.N.000000.4.ANR": "HU HICP overall, monthly, annual rate of change (%)",
+    "ICP/M.HU.N.XEF000.4.ANR": "HU HICP core (excl. energy & food), monthly YoY%",
+    "ICP/M.HU.N.SERV00.4.ANR": "HU HICP services, monthly YoY%",
+    "ICP/M.HU.N.IGOOD0.4.ANR": "HU HICP non-energy industrial goods, monthly YoY%",
+    "ICP/M.HU.N.NRGY00.4.ANR": "HU HICP energy, monthly YoY%",
+    "ICP/M.HU.N.FOOD00.4.ANR": "HU HICP food, monthly YoY%",
+    "ICP/M.U2.N.000000.4.ANR": "Euro area HICP overall, monthly YoY% (flash + final)",
+    "ICP/M.U2.N.XEF000.4.ANR": "Euro area HICP core (excl. energy & food), monthly YoY%",
+    "ICP/M.U2.N.SERV00.4.ANR": "Euro area HICP services, monthly YoY%",
+    # === Exchange rates ===
+    "EXR/D.HUF.EUR.SP00.A": "EUR/HUF daily reference rate (ECB)",
+    "EXR/M.HUF.EUR.SP00.A": "EUR/HUF monthly average reference rate",
+    "EXR/D.USD.EUR.SP00.A": "USD/EUR daily reference rate",
+    "EXR/D.PLN.EUR.SP00.A": "EUR/PLN daily reference rate",
+    "EXR/D.CZK.EUR.SP00.A": "EUR/CZK daily reference rate",
+    "EXR/D.RON.EUR.SP00.A": "EUR/RON daily reference rate",
+    "EXR/D.GBP.EUR.SP00.A": "GBP/EUR daily reference rate",
+    "EXR/D.CHF.EUR.SP00.A": "CHF/EUR daily reference rate",
+    # === Policy rates ===
+    "FM/D.U2.EUR.4F.KR.DFR.LEV": "ECB Deposit Facility Rate (daily, %)",
+    "FM/D.U2.EUR.4F.KR.MRR_FR.LEV": "ECB Main Refinancing Rate, fixed (daily, %)",
+    "FM/D.U2.EUR.4F.KR.MLFR.LEV": "ECB Marginal Lending Facility Rate (daily, %)",
+    "FM/B.U2.EUR.4F.KR.MRR_FR.LEV": "ECB Main Refi Rate, business-day, %",
+    "FM/D.U2.EUR.RT.MM.EONIA_.HSTA": "EONIA / €STR overnight rate (historical, %)",
+    # === Long-term rates (Maastricht) ===
+    "IRS/M.HU.L.L40.CI.0000.HUF.N.Z": "HU 10Y government bond yield, monthly, Maastricht",
+    "IRS/M.U2.L.L40.CI.0000.EUR.N.Z": "Euro area 10Y government bond yield, monthly",
+    # === Monetary aggregates ===
+    "BSI/M.U2.Y.V.M30.X.1.U2.2300.Z01.E": "Euro area M3 monetary aggregate (€ bn)",
+    # === Bond yield curve ===
+    "YC/B.U2.EUR.4F.G_N_A.SV_C_YM.SR_10Y": "Euro area 10Y spot rate, AAA, daily (%)",
+}
+
+
+def _parse_ecb_jsondata(data: dict, max_obs: int = 200) -> dict:
+    """Parse an ECB Data Portal SDMX-JSON response into a list of observations.
+
+    The ECB API returns observations indexed by ordinal time positions, with
+    the time period labels in structure.observation.values. We flatten this
+    into [{period: '2025-12', value: 3.3}, ...].
+    """
+    out: dict = {"observations": [], "meta": {}}
+
+    datasets = data.get("dataSets") or []
+    if not datasets:
+        return out
+    series_dict = datasets[0].get("series") or {}
+    if not series_dict:
+        return out
+
+    # Time period labels live in structure.observation[0].values
+    structure = data.get("structure") or {}
+    obs_dim = structure.get("dimensions", {}).get("observation") or []
+    periods: list[str] = []
+    if obs_dim:
+        periods = [v.get("id", "") for v in obs_dim[0].get("values", [])]
+
+    # Dimension metadata for the series
+    series_dims = structure.get("dimensions", {}).get("series") or []
+    name = structure.get("name") or ""
+    out["meta"] = {"dataflow_name": name, "series_dimensions": {
+        d.get("id"): (d.get("values") or [{}])[0].get("name", "")
+        for d in series_dims
+    }}
+
+    # Take the first (and usually only) series
+    first_series_key = next(iter(series_dict))
+    s = series_dict[first_series_key]
+    raw_obs = s.get("observations") or {}
+
+    rows = []
+    for idx_str, obs_vals in raw_obs.items():
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            continue
+        period = periods[idx] if 0 <= idx < len(periods) else idx_str
+        value = obs_vals[0] if obs_vals else None
+        rows.append({"period": period, "value": value})
+
+    rows.sort(key=lambda r: r["period"])
+    out["observations"] = rows[-max_obs:]
+    return out
+
+
+@mcp.tool()
+async def get_ecb_data(
+    dataset: str,
+    key: str,
+    start_period: str = "",
+    end_period: str = "",
+    last_n: int = 12,
+) -> str:
+    """Fetch a time series from the ECB Data Portal (direct SDMX 2.1 API).
+
+    Source: data-api.ecb.europa.eu/service/data — same underlying data as the
+    ECB Statistical Data Warehouse, the canonical source for euro-area HICP,
+    ECB policy rates, EUR exchange rates, money market rates, MFI balance
+    sheets, government bond yields, etc. Typically 1–24h fresher than
+    DBnomics' mirror.
+
+    Args:
+        dataset: ECB dataflow code. Common ones:
+                 ICP — HICP / consumer prices (overall + sub-aggregates: services,
+                       energy, food, core). HU AND euro area available.
+                 EXR — Exchange rates (EUR reference rates, daily + monthly)
+                 FM  — Financial markets (ECB policy rates, EONIA/€STR)
+                 IRS — Long-term interest rates (Maastricht 10Y govt bond)
+                 BSI — Monetary aggregates M1/M2/M3, MFI balance sheets
+                 MIR — Bank lending/deposit rates by country
+                 STS — Short-term statistics (industrial production, retail trade)
+                 YC  — Yield curve (zero-coupon spot rates)
+                 GFS — Government finance (deficit, debt, EDP)
+                 MNA — Quarterly national accounts (GDP, ESA 2010)
+                 BLS — Bank Lending Survey
+        key: SDMX series key — dot-separated dimension values. Leave any
+             dimension empty for wildcard. Examples:
+               "M.HU.N.000000.4.ANR" — HU HICP overall, monthly YoY%
+               "M.HU.N.SERV00.4.ANR" — HU HICP services, monthly YoY%
+               "M.U2.N.XEF000.4.ANR" — Euro area core HICP, monthly YoY%
+               "D.HUF.EUR.SP00.A"    — EUR/HUF daily reference rate
+               "D.U2.EUR.4F.KR.DFR.LEV" — ECB Deposit Facility Rate (daily)
+               "M.HU.L.L40.CI.0000.HUF.N.Z" — HU 10Y Maastricht bond yield (monthly)
+             For HICP services use ICP_ITEM=SERV00 (NOT 'SERV'). For core HICP
+             excluding energy and food use XEF000. Hungary REF_AREA=HU,
+             euro area=U2. STS_INSTITUTION=4 for Eurostat-sourced HICP.
+        start_period: Optional start period (e.g. "2024-01" or "2024-Q1"). Empty = all.
+        end_period: Optional end period. Empty = latest available.
+        last_n: If start_period is empty, return only the last N observations
+                (default 12). Set 0 to disable and return everything.
+
+    Returns:
+        JSON with dataflow metadata, dimension descriptions, and observations
+        (period + value pairs, oldest to newest).
+
+    Hints for HU HICP coverage:
+        ECB ICP receives HU monthly HICP from Eurostat ~2–3 days after the
+        KSH "Fogyasztói árak" flash release. If you need TODAY's number and
+        ECB still shows last month, fall back to get_ksh_flash with query
+        "fogyasztói árak".
+    """
+    dataset = dataset.strip().upper()
+    key = key.strip()
+    if not dataset or not key:
+        return json.dumps({
+            "error": "Both 'dataset' and 'key' are required",
+            "hint": "Example: dataset='ICP', key='M.HU.N.000000.4.ANR'",
+            "known_dataflows": ECB_DATAFLOWS,
+        }, ensure_ascii=False, indent=2)
+
+    params: dict = {"format": "jsondata"}
+    if start_period:
+        params["startPeriod"] = start_period
+    if end_period:
+        params["endPeriod"] = end_period
+    if last_n and last_n > 0 and not start_period:
+        params["lastNObservations"] = int(last_n)
+
+    url = f"{ECB_BASE}/{dataset}/{key}"
+    client = await get_client()
+    try:
+        resp = await client.get(url, params=params, headers={"Accept": "application/json"}, timeout=30.0)
+    except Exception as e:
+        return json.dumps({"error": f"ECB request failed: {e}"}, ensure_ascii=False, indent=2)
+
+    if resp.status_code == 404:
+        return json.dumps({
+            "error": f"ECB series not found: {dataset}/{key}",
+            "status": 404,
+            "hint": (
+                "Check series key dimensions. For ICP services use SERV00 (not SERV). "
+                "For wildcard search use empty dimensions: 'M.HU.N..4.ANR'. "
+                "Browse the catalog at https://data.ecb.europa.eu/data/datasets"
+            ),
+            "known_dataflows": ECB_DATAFLOWS,
+        }, ensure_ascii=False, indent=2)
+    if resp.status_code != 200:
+        return json.dumps({
+            "error": f"ECB HTTP {resp.status_code}",
+            "body": resp.text[:300],
+        }, ensure_ascii=False, indent=2)
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        return json.dumps({"error": f"ECB JSON parse failed: {e}"}, ensure_ascii=False, indent=2)
+
+    parsed = _parse_ecb_jsondata(data)
+
+    out = {
+        "source": "ECB Data Portal (data-api.ecb.europa.eu)",
+        "dataset": dataset,
+        "key": key,
+        "name": parsed["meta"].get("dataflow_name", ""),
+        "dimensions": parsed["meta"].get("series_dimensions", {}),
+        "observations_returned": len(parsed["observations"]),
+        "data": parsed["observations"],
+    }
+
+    if parsed["observations"]:
+        try:
+            _auto_learn_recipe(
+                "ECB", dataset, {"key": key},
+                out["name"] or f"{dataset}/{key}",
+                len(parsed["observations"]),
+            )
+        except Exception:
+            pass
+
+    return json.dumps(out, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Flash releases — KSH and Eurostat (gyorstájékoztatók)
+# ---------------------------------------------------------------------------
+# Both KSH (gyorstajekoztatok.xml RSS) and Eurostat (Atom feed via the news
+# portlet) publish flash macro releases 1–3 days before the official data
+# tables update. We index both into a shared SQLite cache so search_datasets
+# and get_flash_releases can surface them.
+KSH_FLASH_RSS = "https://www.ksh.hu/rss/gyorstajekoztatok.xml"
+EUROSTAT_FLASH_ATOM = (
+    "https://ec.europa.eu/eurostat/web/main/news/euro-indicators"
+    "?p_p_id=estatsearchportlet_WAR_estatsearchportlet_INSTANCE_OaTpFrwlabNK"
+    "&p_p_lifecycle=2"
+    "&p_p_resource_id=atom"
+    "&_estatsearchportlet_WAR_estatsearchportlet_INSTANCE_OaTpFrwlabNK_pageSize=60"
+    "&_estatsearchportlet_WAR_estatsearchportlet_INSTANCE_OaTpFrwlabNK_sort=lastUpdateDate"
+    "&_estatsearchportlet_WAR_estatsearchportlet_INSTANCE_OaTpFrwlabNK_collection=CAT_PREREL"
+)
+FLASH_DB_PATH = os.environ.get("FLASH_DB", "/tmp/flash_releases.db")
+FLASH_TTL = 3600 * 6  # refresh both feeds every 6 hours
+_flash_loaded_at: dict[str, float] = {"ksh": 0.0, "eurostat": 0.0}
+
+
+def _init_flash_db() -> None:
+    conn = sqlite3.connect(FLASH_DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS flash_items (
+            link TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            title TEXT NOT NULL,
+            pub_date TEXT,
+            description TEXT,
+            fetched_at REAL NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_flash_source ON flash_items(source)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_flash_pub_date ON flash_items(pub_date)")
+    conn.commit()
+    conn.close()
+
+
+def _clean_text(s: str) -> str:
+    s = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", s, flags=re.DOTALL)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    for ent, repl in (("&amp;", "&"), ("&quot;", '"'), ("&lt;", "<"), ("&gt;", ">"),
+                      ("&#8211;", "–"), ("&#8217;", "’"), ("&apos;", "'"),
+                      ("&#39;", "'"), ("&#34;", '"')):
+        s = s.replace(ent, repl)
+    return s
+
+
+def _parse_ksh_rss(xml_bytes: bytes) -> list[dict]:
+    """Parse the KSH RSS feed (ISO-8859-2). KSH's feed uses lowercase
+    <pubdate> instead of <pubDate>, hence regex with re.IGNORECASE.
+    """
+    try:
+        text = xml_bytes.decode("iso-8859-2")
+    except (UnicodeDecodeError, LookupError):
+        text = xml_bytes.decode("utf-8", errors="replace")
+
+    items: list[dict] = []
+    for chunk in re.findall(r"<item>(.*?)</item>", text, flags=re.DOTALL | re.IGNORECASE):
+        def _grab(tag: str) -> str:
+            m = re.search(rf"<{tag}>(.*?)</{tag}>", chunk, flags=re.DOTALL | re.IGNORECASE)
+            return _clean_text(m.group(1)) if m else ""
+
+        title = _grab("title")
+        link = _grab("link")
+        pub = _grab("pubdate")
+        desc = _grab("description")
+        if link and title:
+            items.append({"title": title, "link": link, "pub_date": pub, "description": desc})
+    return items
+
+
+def _parse_eurostat_atom(xml_bytes: bytes) -> list[dict]:
+    """Parse the Eurostat Atom feed of news/press releases (CAT_PREREL)."""
+    text = xml_bytes.decode("utf-8", errors="replace")
+    items: list[dict] = []
+    for chunk in re.findall(r"<entry>(.*?)</entry>", text, flags=re.DOTALL):
+        title_m = re.search(r"<title[^>]*>(.*?)</title>", chunk, flags=re.DOTALL)
+        link_m = re.search(r'<link[^>]+href="([^"]+)"', chunk)
+        pub_m = re.search(r"<published>(.*?)</published>", chunk, flags=re.DOTALL)
+        summary_m = re.search(r"<summary[^>]*>(.*?)</summary>", chunk, flags=re.DOTALL)
+        title = _clean_text(title_m.group(1)) if title_m else ""
+        link = link_m.group(1).replace("&amp;", "&") if link_m else ""
+        pub = _clean_text(pub_m.group(1)) if pub_m else ""
+        summary = _clean_text(summary_m.group(1)) if summary_m else ""
+        if link and title:
+            items.append({"title": title, "link": link, "pub_date": pub, "description": summary})
+    return items
+
+
+async def _refresh_flash_source(source: str, force: bool = False) -> int:
+    """Fetch a single flash source (ksh|eurostat) and upsert into SQLite."""
+    now = time.time()
+    if not force and (now - _flash_loaded_at.get(source, 0.0)) < FLASH_TTL:
+        return 0
+
+    _init_flash_db()
+    client = await get_client()
+    url = KSH_FLASH_RSS if source == "ksh" else EUROSTAT_FLASH_ATOM
+    parser = _parse_ksh_rss if source == "ksh" else _parse_eurostat_atom
+    try:
+        resp = await client.get(url, timeout=25.0)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning("Flash feed fetch failed (%s): %s", source, e)
+        return 0
+
+    items = parser(resp.content)
+    if not items:
+        return 0
+
+    conn = sqlite3.connect(FLASH_DB_PATH)
+    new_count = 0
+    for it in items:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO flash_items (link, source, title, pub_date, description, fetched_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (it["link"], source, it["title"], it.get("pub_date", ""), it.get("description", ""), now),
+        )
+        if cur.rowcount:
+            new_count += 1
+        else:
+            conn.execute(
+                "UPDATE flash_items SET title=?, pub_date=?, description=?, fetched_at=? "
+                "WHERE link=? AND source=?",
+                (it["title"], it.get("pub_date", ""), it.get("description", ""), now,
+                 it["link"], source),
+            )
+    conn.commit()
+    conn.close()
+    _flash_loaded_at[source] = now
+    logger.info("Flash refresh [%s]: %d items (%d new)", source, len(items), new_count)
+    return new_count
+
+
+async def _refresh_flash_all(force: bool = False) -> dict:
+    """Refresh both KSH and Eurostat feeds in parallel."""
+    ksh_n, eu_n = await asyncio.gather(
+        _refresh_flash_source("ksh", force=force),
+        _refresh_flash_source("eurostat", force=force),
+        return_exceptions=True,
+    )
+    return {
+        "ksh_new": ksh_n if isinstance(ksh_n, int) else 0,
+        "eurostat_new": eu_n if isinstance(eu_n, int) else 0,
+    }
+
+
+def _search_flash_db(query: str, source: str = "all", limit: int = 20) -> list[dict]:
+    """Search cached flash releases by keyword. source: 'ksh'|'eurostat'|'all'."""
+    if not os.path.exists(FLASH_DB_PATH):
+        return []
+    where = ""
+    params: tuple = ()
+    if source in ("ksh", "eurostat"):
+        where = "WHERE source = ?"
+        params = (source,)
+    try:
+        conn = sqlite3.connect(FLASH_DB_PATH)
+        rows = conn.execute(
+            f"SELECT link, source, title, pub_date, description FROM flash_items {where} "
+            f"ORDER BY pub_date DESC", params,
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return []
+
+    if not query.strip():
+        return [
+            {"source": s, "title": t, "link": l, "pub_date": p, "description": d}
+            for l, s, t, p, d in rows[:limit]
+        ]
+
+    keywords = query.lower().split()
+    scored: list[tuple] = []
+    for link, src, title, pub, desc in rows:
+        text = f"{title} {desc}".lower()
+        score = sum(1 for kw in keywords if kw in text)
+        if score > 0:
+            scored.append((score, pub or "", {
+                "source": src, "title": title, "link": link,
+                "pub_date": pub, "description": desc,
+            }))
+    # Highest score first, then most recent pub_date first within same score
+    scored.sort(key=lambda x: (-x[0], x[1]), reverse=False)
+    scored.sort(key=lambda x: (-x[0], -ord(x[1][0]) if x[1] else 0))
+    # Cleaner: just sort by score desc, pub_date desc
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return [e for _, _, e in scored[:limit]]
+
+
+@mcp.tool()
+async def get_flash_releases(
+    query: str = "",
+    source: str = "all",
+    limit: int = 15,
+    refresh: bool = False,
+) -> str:
+    """Search flash statistical releases ("gyorstájékoztatók") from KSH and Eurostat.
+
+    Use this tool when official time-series APIs (Eurostat, ECB, KSH STADAT)
+    are not yet updated with the latest period and you need the freshest
+    published number. KSH typically publishes 1–3 days before Eurostat
+    re-ingests the data; Eurostat publishes euro-area flash estimates (HICP,
+    GDP) ahead of the official statistical release.
+
+    Args:
+        query: Keyword filter (HU or EN). Examples:
+                 KSH:      "fogyasztói árak", "munkanélküliség", "ipari",
+                           "kiskereskedelem", "üzemanyag", "GDP", "infláció"
+                 Eurostat: "HICP", "inflation", "unemployment", "GDP", "PPI",
+                           "industrial", "retail trade", "trade", "deficit"
+               Empty = return latest items unfiltered.
+        source: "ksh" | "eurostat" | "all" (default).
+        limit: Max items to return (default 15).
+        refresh: Force feed refresh even if cached. Default False (6h TTL).
+
+    Returns:
+        JSON with items: source, title, link, pub_date, description.
+
+    Coverage notes:
+        - KSH RSS retains only the most recent ~5–20 items (rolling window).
+        - Eurostat Atom feed returns up to 60 items per page (last few months
+          of euro-indicator press releases).
+        - For HU monthly HICP / unemployment / GDP after the data is published,
+          combine: first get_flash_releases for the headline + link, then
+          get_ksh_stadat / get_eurostat_data / get_ecb_data for the structured
+          time series.
+    """
+    src = source.strip().lower()
+    if src not in ("ksh", "eurostat", "all"):
+        return json.dumps({
+            "error": f"Invalid source '{source}'",
+            "hint": "Use 'ksh', 'eurostat', or 'all'.",
+        }, ensure_ascii=False, indent=2)
+
+    try:
+        if src == "all":
+            await _refresh_flash_all(force=refresh)
+        else:
+            await _refresh_flash_source(src, force=refresh)
+    except Exception as e:
+        logger.warning("Flash refresh failed: %s", e)
+
+    rows = _search_flash_db(query, src, limit)
+    out = {
+        "source": "Flash releases (KSH + Eurostat)" if src == "all" else (
+            "KSH gyorstájékoztatók (RSS)" if src == "ksh" else "Eurostat news (Atom)"
+        ),
+        "source_filter": src,
+        "query": query,
+        "count": len(rows),
+        "items": rows,
+    }
+    if not rows:
+        out["hint"] = (
+            "No matches. Try broader keywords or empty query for the latest items. "
+            "Set refresh=True to force a feed update."
+        )
+    return json.dumps(out, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -4009,6 +4654,9 @@ LANDING_HTML = """<!DOCTYPE html>
     <span>Yahoo Finance</span>
     <span>BIS</span>
     <span>COMEXT</span>
+    <span>ECB Data Portal</span>
+    <span>KSH gyorstájékoztatók</span>
+    <span>Eurostat news</span>
   </div>
 </div>
 
