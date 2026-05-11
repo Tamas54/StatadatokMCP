@@ -5011,6 +5011,8 @@ _API_TOOL_DISPATCH = {
     "forecast": forecast,
     "get_economic_calendar": get_economic_calendar,
     "get_policy_rates": get_policy_rates,
+    "get_ecb_data": get_ecb_data,
+    "get_flash_releases": get_flash_releases,
 }
 
 
