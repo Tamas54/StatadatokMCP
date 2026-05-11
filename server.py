@@ -4847,10 +4847,26 @@ INDICATOR_RESOLVERS[("HU", "cpi")] = [
                               "rx": r"(\d+[,.]\d)\s*%[\s\-]*kal\s+haladt[áa]k?\s+meg\s+az\s+egy\s+évvel"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.000000.4.ANR"},
     {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "HU"},
+    # Eurostat newsroom press release scrape (havonta a HICP flash)
+    {"type": "brave_search", "query": "Eurostat HICP Hungary {YYYY-MM} annual inflation rate",
+                              "site": "ec.europa.eu",
+                              "rx": r"Hungary[\s\S]{0,300}?(\d+[,.]\d)\s*%"},
     {"type": "brave_search", "query": "KSH fogyasztói árak {YYYY-MM} infláció",
                               "site": "ksh.hu",
                               "rx": r"(\d+[,.]\d)\s*%"},
     {"type": "brave_search", "query": "HU CPI inflation {YYYY-MM} headline",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+
+# HU PPI — a KSH ipi gyorstájékoztató külön publikál havi PPI-t
+INDICATOR_RESOLVERS[("HU", "ppi")] = [
+    {"type": "ksh_flash",    "topic": "ipi",
+                              "rx": r"ipari\s+termelői\s+árak[\s\S]{0,200}?(\d+[,.]\d)\s*%[\s\-]*kal"},
+    {"type": "ksh_flash",    "topic": "ipi",
+                              "rx": r"(\d+[,.]\d)\s*%[\s\-]*kal\s+(?:emelkedett|drágult|nőtt)"},
+    {"type": "eurostat",     "dataset_code": "sts_inpp_m", "geo": "HU"},
+    {"type": "brave_search", "query": "KSH ipari termelői árindex {YYYY-MM}",
+                              "site": "ksh.hu",
                               "rx": r"(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("HU", "core_cpi")] = [
@@ -4898,8 +4914,26 @@ INDICATOR_RESOLVERS[("HU", "services_cpi")] = [
 INDICATOR_RESOLVERS[("HU", "unemployment")] = [
     {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "HU",
                               "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+    # KSH mun gyorstájékoztató: "munkanélküliségi ráta X,Y%"
+    {"type": "ksh_flash",    "topic": "mun",
+                              "rx": r"munkanélküliségi\s+ráta[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "KSH munkanélküliségi ráta {YYYY-MM}",
+                              "site": "ksh.hu",
+                              "rx": r"(\d+[,.]\d)\s*%"},
     {"type": "brave_search", "query": "KSH munkanélküliségi ráta {YYYY-MM}",
                               "rx": r"(\d+[,.]\d)\s*%"},
+]
+
+# HU bond yield 10y — ECB IRS havi + napi fallback portfolio/MNB-ról
+INDICATOR_RESOLVERS[("HU", "bond_yield_10y")] = [
+    {"type": "ecb",          "dataset": "IRS", "key": "M.HU.L.L40.CI.0000.HUF.N.Z"},
+    {"type": "brave_search", "query": "magyar 10 éves államkötvény hozam {YYYY-MM}",
+                              "site": "akk.hu",
+                              "rx": r"(\d+[,.]\d{1,3})\s*%"},
+    {"type": "brave_search", "query": "magyar 10 éves államkötvény hozam {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d{1,3})\s*%"},
+    {"type": "brave_search", "query": "HU 10Y bond yield {YYYY-MM-DD}",
+                              "rx": r"(\d+[,.]\d{1,3})\s*%"},
 ]
 INDICATOR_RESOLVERS[("HU", "gdp")] = [
     {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
