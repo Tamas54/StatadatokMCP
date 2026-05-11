@@ -4541,182 +4541,458 @@ _FRESHNESS_DAYS: dict[str, int] = {
 #   - "scrape":       Static URL scrape via brave-mcp (JS-rendered OK), regex extraction
 #   - "brave_search": Brave search with site filter + scrape top hit
 #   - "bis":          BIS WS_CBPOL via DBnomics
-INDICATOR_RESOLVERS: dict[tuple[str, str], list[dict]] = {
-    # ─── Hungary ───────────────────────────────────────────────
-    ("HU", "cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.000000.4.ANR"},
-        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "HU"},
-        {"type": "scrape",       "url": "https://www.ksh.hu/s/helyzetkep/2024/04/index.html",
-                                  "rx": r"fogyasztói[\s\w]*?(\d+[,.]\d)\s*%"},
-        {"type": "brave_search", "query": "KSH fogyasztói árak {YYYY-MM} infláció",
-                                  "rx": r"(\d+[,.]\d)\s*%"},
+#   - "dbnomics":     Any DBnomics series (provider/dataset/code)
+#
+# The table is built in two passes:
+#   1. _eu_country_resolvers(c) generates the standard 8-indicator block for
+#      every EU/EEA country (ECB ICP + Eurostat + generic brave_search)
+#   2. Country-specific overrides (HU, DE, FR, US, GB, ...) add language-
+#      localized brave queries, national scrape URLs, and policy_rate logic.
+#
+# The brave-search query templates use {YYYY-MM} (= previous month, since
+# current month is usually not yet published) and {YYYY} placeholders.
+
+
+def _eu_country_resolvers(c: str) -> dict[str, list[dict]]:
+    """Standard 8-indicator resolver block for an EU/EEA country.
+
+    Coverage: cpi, core_cpi, services_cpi, energy_cpi, food_cpi, ppi,
+    unemployment, gdp, retail_trade, industrial_production. All resolvers
+    chain ECB ICP → Eurostat → generic brave_search; country-specific
+    overrides (national stats office scrape, native-language queries) are
+    layered ON TOP after this generator.
+    """
+    return {
+        "cpi": [
+            {"type": "ecb", "dataset": "ICP", "key": f"M.{c}.N.000000.4.ANR"},
+            {"type": "eurostat", "dataset_code": "prc_hicp_manr", "geo": c},
+            {"type": "brave_search",
+             "query": f"HICP inflation {c} {{YYYY-MM}} annual rate",
+             "rx": r"(\d+[,.]\d)\s*%"},
+        ],
+        "core_cpi": [
+            {"type": "ecb", "dataset": "ICP", "key": f"M.{c}.N.XEF000.4.ANR"},
+            {"type": "brave_search",
+             "query": f"HICP core inflation {c} {{YYYY-MM}}",
+             "rx": r"(\d+[,.]\d)\s*%"},
+        ],
+        "services_cpi": [
+            {"type": "ecb", "dataset": "ICP", "key": f"M.{c}.N.SERV00.4.ANR"},
+            {"type": "brave_search",
+             "query": f"HICP services inflation {c} {{YYYY-MM}}",
+             "rx": r"(\d+[,.]\d)\s*%"},
+        ],
+        "energy_cpi": [
+            {"type": "ecb", "dataset": "ICP", "key": f"M.{c}.N.NRGY00.4.ANR"},
+        ],
+        "food_cpi": [
+            {"type": "ecb", "dataset": "ICP", "key": f"M.{c}.N.FOOD00.4.ANR"},
+        ],
+        "ppi": [
+            {"type": "eurostat", "dataset_code": "sts_inpp_m", "geo": c,
+             "filters": "indic_bt=PRC_PRR&nace_r2=B-E36&s_adj=NSA&unit=RCH_A"},
+            {"type": "brave_search",
+             "query": f"PPI producer prices {c} {{YYYY-MM}} annual",
+             "rx": r"(\d+[,.]\d)\s*%"},
+        ],
+        "unemployment": [
+            {"type": "eurostat", "dataset_code": "une_rt_m", "geo": c,
+             "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+            {"type": "brave_search",
+             "query": f"unemployment rate {c} {{YYYY-MM}} Eurostat",
+             "rx": r"(\d+[,.]\d)\s*%"},
+        ],
+        "gdp": [
+            {"type": "eurostat", "dataset_code": "namq_10_gdp", "geo": c,
+             "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
+            {"type": "brave_search",
+             "query": f"GDP growth {c} {{YYYY}} flash estimate Eurostat",
+             "rx": r"(\d+[,.]\d)\s*%"},
+        ],
+        "retail_trade": [
+            {"type": "eurostat", "dataset_code": "sts_trtu_m", "geo": c,
+             "filters": "indic_bt=TOVV&nace_r2=G47&s_adj=SCA&unit=RCH_A"},
+        ],
+        "industrial_production": [
+            {"type": "eurostat", "dataset_code": "sts_inpr_m", "geo": c,
+             "filters": "indic_bt=PROD&nace_r2=B-D&s_adj=SCA&unit=RCH_A"},
+        ],
+        "trade_balance": [
+            {"type": "eurostat", "dataset_code": "ext_lt_intertrd", "geo": c},
+        ],
+        "gov_debt": [
+            {"type": "eurostat", "dataset_code": "gov_10q_ggdebt", "geo": c,
+             "filters": "unit=PC_GDP&sector=S13"},
+        ],
+    }
+
+
+INDICATOR_RESOLVERS: dict[tuple[str, str], list[dict]] = {}
+
+# ─── Pass 1: standard EU/EEA country blocks (auto-generated) ──────────
+# 27 EU + Norway + Switzerland — all get ECB ICP + Eurostat + generic
+# brave_search coverage for CPI/core/services/energy/food/ppi/unemployment/
+# gdp/retail_trade/industrial_production/trade_balance/gov_debt (12 indicators).
+for _c in (
+    "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR",
+    "GR", "HR", "HU", "IE", "IT", "LT", "LU", "LV", "MT", "NL", "PL",
+    "PT", "RO", "SE", "SI", "SK", "NO", "CH",
+):
+    _block = _eu_country_resolvers(_c)
+    for _ind, _list in _block.items():
+        INDICATOR_RESOLVERS[(_c, _ind)] = _list
+
+# ─── Pass 2: policy_rate via BIS WS_CBPOL + central-bank scrapes ──────
+# Most EU central banks publish their policy rate on a stable URL; the BIS
+# WS_CBPOL series is the structured fallback (often stale by 1–3 months).
+_POLICY_RATE_SCRAPE_URLS: dict[str, list[tuple[str, str]]] = {
+    # (url, regex) tuples in order of preference
+    "HU": [
+        ("https://www.mnb.hu/sajtoszoba/sajtokozlemenyek",
+         r"(?:irányadó kamat|alapkamat|jegybanki[\s\w]*kamat)[\s\S]{0,300}?(\d+[,.]\d{1,2})\s*%"),
+        ("https://www.mnb.hu/Root/Dokumentumtar/MNB/Monetaris_politika/mnben_jegybanki_alapkamat",
+         r"(\d+[,.]\d{1,2})\s*%"),
     ],
-    ("HU", "core_cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.XEF000.4.ANR"},
-        {"type": "ksh_stadat",   "table_code": "ara0045", "yoy_from_index": True},
-        {"type": "brave_search", "query": "MNB maginfláció {YYYY-MM}",
-                                  "rx": r"(\d+[,.]\d)\s*%"},
-    ],
-    ("HU", "services_cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.SERV00.4.ANR"},
-        {"type": "brave_search", "query": "MNB Inflációs Jelentés szolgáltatás infláció {YYYY}",
-                                  "rx": r"szolgáltatás[\s\w]*?(\d+[,.]\d)\s*%"},
-    ],
-    ("HU", "policy_rate"): [
-        {"type": "scrape",       "url": "https://www.mnb.hu/jegybanki-alapkamat-alakulasa",
-                                  "rx": r"(\d+[,.]\d{1,2})\s*%"},
-        {"type": "brave_search", "query": "MNB irányadó kamat alapkamat {YYYY-MM} monetáris tanács",
-                                  "site": "mnb.hu",
-                                  "rx": r"(\d+[,.]\d{1,2})\s*%"},
-        {"type": "bis",          "country": "HU"},
-    ],
-    ("HU", "unemployment"): [
-        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "HU",
-                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
-        {"type": "brave_search", "query": "KSH munkanélküliségi ráta {YYYY-MM}",
-                                  "site": "ksh.hu",
-                                  "rx": r"(\d+[,.]\d)\s*%"},
-    ],
-    ("HU", "gdp"): [
-        {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
-                                  "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
-        {"type": "brave_search", "query": "KSH GDP gyorsbecslés {YYYY} negyedév",
-                                  "site": "ksh.hu",
-                                  "rx": r"(\d+[,.]\d)\s*%"},
-    ],
-    # ─── Germany ───────────────────────────────────────────────
-    ("DE", "cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.DE.N.000000.4.ANR"},
-        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "DE"},
-        {"type": "brave_search", "query": "Destatis Verbraucherpreise {YYYY-MM} Inflationsrate",
-                                  "site": "destatis.de",
-                                  "rx": r"(\d+[,.]\d)\s*%"},
-    ],
-    ("DE", "core_cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.DE.N.XEF000.4.ANR"},
-        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "DE",
-                                  "filters": "coicop=TOT_X_NRG_FOOD&unit=RCH_A"},
-    ],
-    ("DE", "unemployment"): [
-        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "DE",
-                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
-    ],
-    ("DE", "gdp"): [
-        {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "DE",
-                                  "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
-    ],
-    # ─── France ───────────────────────────────────────────────
-    ("FR", "cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.FR.N.000000.4.ANR"},
-        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "FR"},
-        {"type": "brave_search", "query": "INSEE indice prix consommation {YYYY-MM} inflation",
-                                  "site": "insee.fr",
-                                  "rx": r"(\d+[,.]\d)\s*%"},
-    ],
-    ("FR", "unemployment"): [
-        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "FR",
-                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
-    ],
-    ("FR", "gdp"): [
-        {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "FR",
-                                  "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
-    ],
-    # ─── Italy ───────────────────────────────────────────────
-    ("IT", "cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.IT.N.000000.4.ANR"},
-        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "IT"},
-    ],
-    ("IT", "unemployment"): [
-        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "IT",
-                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
-    ],
-    ("IT", "gdp"): [
-        {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "IT",
-                                  "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
-    ],
-    # ─── Spain ───────────────────────────────────────────────
-    ("ES", "cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.ES.N.000000.4.ANR"},
-        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "ES"},
-    ],
-    ("ES", "unemployment"): [
-        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "ES",
-                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
-    ],
-    # ─── Euro area aggregate (EA / U2) ─────────────────────────
-    ("EA", "cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.000000.4.ANR"},
-        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "EA"},
-    ],
-    ("EA", "core_cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.XEF000.4.ANR"},
-    ],
-    ("EA", "services_cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.SERV00.4.ANR"},
-    ],
-    ("EA", "policy_rate"): [
-        {"type": "ecb",          "dataset": "FM",  "key": "D.U2.EUR.4F.KR.DFR.LEV"},
-        {"type": "scrape",       "url": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/key_ecb_interest_rates/html/index.en.html",
-                                  "rx": r"Deposit facility[\s\S]{0,300}?(\d+[,.]\d{1,2})\s*%"},
-    ],
-    ("EA", "unemployment"): [
-        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "EA20",
-                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
-    ],
-    ("EA", "gdp"): [
-        {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "EA20",
-                                  "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
-    ],
-    # ─── United States ─────────────────────────────────────────
-    ("US", "cpi"): [
-        {"type": "fred",         "series_id": "CPIAUCSL", "units": "pc1"},  # YoY%
-        {"type": "scrape",       "url": "https://www.bls.gov/news.release/cpi.nr0.htm",
-                                  "rx": r"(\d+[,.]\d)\s*percent"},
-    ],
-    ("US", "core_cpi"): [
-        {"type": "fred",         "series_id": "CPILFESL", "units": "pc1"},
-    ],
-    ("US", "policy_rate"): [
-        {"type": "fred",         "series_id": "DFEDTARU"},  # Fed Funds Target Upper Bound
-        {"type": "scrape",       "url": "https://www.federalreserve.gov/monetarypolicy/openmarket.htm",
-                                  "rx": r"(\d+[,.]\d{1,2})\s*(?:to|–|-)?\s*(\d+[,.]\d{1,2})?\s*percent"},
-    ],
-    ("US", "unemployment"): [
-        {"type": "fred",         "series_id": "UNRATE"},
-    ],
-    ("US", "gdp"): [
-        {"type": "fred",         "series_id": "GDPC1", "units": "pc1"},  # Real GDP YoY%
-    ],
-    # ─── UK ───────────────────────────────────────────────────
-    ("GB", "cpi"): [
-        {"type": "ecb",          "dataset": "ICP", "key": "M.GB.N.000000.4.ANR"},
-        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "UK"},
-        {"type": "brave_search", "query": "ONS UK CPI inflation rate {YYYY-MM}",
-                                  "site": "ons.gov.uk",
-                                  "rx": r"(\d+[,.]\d)\s*%"},
-    ],
-    ("GB", "policy_rate"): [
-        {"type": "bis",          "country": "GB"},
-        {"type": "scrape",       "url": "https://www.bankofengland.co.uk/monetary-policy/the-interest-rate-bank-rate",
-                                  "rx": r"Bank Rate[\s\S]{0,200}?(\d+[,.]\d{1,2})\s*%"},
-    ],
-    ("GB", "unemployment"): [
-        {"type": "brave_search", "query": "ONS UK unemployment rate {YYYY-MM}",
-                                  "site": "ons.gov.uk",
-                                  "rx": r"(\d+[,.]\d)\s*%"},
-    ],
+    "CZ": [("https://www.cnb.cz/en/monetary-policy/bank-board-decisions/",
+            r"(?:two-week repo rate|2W repo rate)[\s\S]{0,200}?(\d+[,.]\d{1,2})\s*%")],
+    "PL": [("https://nbp.pl/en/monetary-policy/decisions-of-the-monetary-policy-council/",
+            r"(?:reference rate)[\s\S]{0,200}?(\d+[,.]\d{1,2})\s*%")],
+    "RO": [("https://www.bnro.ro/Monetary-Policy--3318.aspx",
+            r"(?:monetary policy rate|key policy rate)[\s\S]{0,200}?(\d+[,.]\d{1,2})\s*%")],
+    "SE": [("https://www.riksbank.se/en-gb/monetary-policy/the-policy-rate/",
+            r"(?:policy rate)[\s\S]{0,200}?(\d+[,.]\d{1,2})\s*%")],
+    "DK": [("https://www.nationalbanken.dk/en/what-we-do/stable-prices-monetary-policy-and-the-danish-economy/official-interest-rates",
+            r"(?:current account rate|certificates of deposit rate)[\s\S]{0,200}?(\d+[,.]\d{1,2})\s*%")],
+    "NO": [("https://www.norges-bank.no/en/topics/Monetary-policy/Policy-rate/",
+            r"(?:policy rate)[\s\S]{0,200}?(\d+[,.]\d{1,2})\s*%")],
+    "CH": [("https://www.snb.ch/en/iabout/monpol/id/monpol_current",
+            r"(?:policy rate|SNB policy rate)[\s\S]{0,200}?(-?\d+[,.]\d{1,2})\s*%")],
+    "GB": [("https://www.bankofengland.co.uk/monetary-policy/the-interest-rate-bank-rate",
+            r"Bank Rate[\s\S]{0,300}?(\d+[,.]\d{1,2})\s*%")],
 }
+
+for _c, _scrape_list in _POLICY_RATE_SCRAPE_URLS.items():
+    INDICATOR_RESOLVERS[(_c, "policy_rate")] = [
+        {"type": "scrape", "url": _url, "rx": _rx} for _url, _rx in _scrape_list
+    ] + [
+        {"type": "brave_search",
+         "query": f"central bank policy rate {_c} {{YYYY-MM}} monetary policy decision",
+         "rx": r"(\d+[,.]\d{1,2})\s*%"},
+        {"type": "bis", "country": _c},
+    ]
+
+# ─── Pass 3: country-specific overrides (native language brave queries) ──
+
+# Hungary — Magyar nyelvű brave queryk és KSH-stadat fallback
+INDICATOR_RESOLVERS[("HU", "cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.000000.4.ANR"},
+    {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "HU"},
+    {"type": "brave_search", "query": "KSH fogyasztói árak {YYYY-MM} infláció",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "HU CPI inflation {YYYY-MM} headline",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("HU", "core_cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.XEF000.4.ANR"},
+    {"type": "ksh_stadat",   "table_code": "ara0045", "yoy_from_index": True},
+    {"type": "brave_search", "query": "KSH maginfláció {YYYY-MM} core",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "MNB maginfláció {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("HU", "services_cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.SERV00.4.ANR"},
+    {"type": "brave_search", "query": "MNB Inflációs Jelentés szolgáltatás infláció {YYYY}",
+                              "rx": r"szolgáltatás[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "HU services inflation {YYYY-MM} HICP",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("HU", "unemployment")] = [
+    {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "HU",
+                              "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+    {"type": "brave_search", "query": "KSH munkanélküliségi ráta {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("HU", "gdp")] = [
+    {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
+                              "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
+    {"type": "brave_search", "query": "KSH GDP gyorsbecslés {YYYY} negyedév",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("HU", "policy_rate")] = [
+    {"type": "scrape",       "url": "https://www.mnb.hu/sajtoszoba/sajtokozlemenyek",
+                              "rx": r"(?:irányadó kamat|alapkamat|jegybanki[\s\w]*kamat)[\s\S]{0,400}?(\d+[,.]\d{1,2})\s*%"},
+    {"type": "brave_search", "query": "MNB irányadó kamat alapkamat {YYYY-MM} monetáris tanács döntés",
+                              "rx": r"(\d+[,.]\d{1,2})\s*%"},
+    {"type": "brave_search", "query": "MNB base rate Hungary {YYYY-MM} policy decision",
+                              "rx": r"(\d+[,.]\d{1,2})\s*%"},
+    {"type": "bis",          "country": "HU"},
+]
+
+# Germany — native German brave queries override
+INDICATOR_RESOLVERS[("DE", "cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.DE.N.000000.4.ANR"},
+    {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "DE"},
+    {"type": "brave_search", "query": "Destatis Verbraucherpreise {YYYY-MM} Inflationsrate",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "Germany CPI HICP inflation {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+
+# France — INSEE
+INDICATOR_RESOLVERS[("FR", "cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.FR.N.000000.4.ANR"},
+    {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "FR"},
+    {"type": "brave_search", "query": "INSEE indice prix consommation {YYYY-MM} inflation",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "France CPI HICP inflation {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+
+# Italy — ISTAT
+INDICATOR_RESOLVERS[("IT", "cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.IT.N.000000.4.ANR"},
+    {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "IT"},
+    {"type": "brave_search", "query": "ISTAT prezzi al consumo {YYYY-MM} inflazione",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+
+# Spain — INE
+INDICATOR_RESOLVERS[("ES", "cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.ES.N.000000.4.ANR"},
+    {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "ES"},
+    {"type": "brave_search", "query": "INE IPC España {YYYY-MM} inflación",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+
+# ─── Pass 4: Euro area aggregate (EA / U2) ─────────────────────────
+INDICATOR_RESOLVERS[("EA", "cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.000000.4.ANR"},
+    {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "EA"},
+    {"type": "brave_search", "query": "Eurostat euro area HICP flash {YYYY-MM} annual rate",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "euro area inflation {YYYY-MM} ECB",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("EA", "core_cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.XEF000.4.ANR"},
+    {"type": "brave_search", "query": "Eurostat euro area core HICP {YYYY-MM} excluding energy food",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.SERV00.4.ANR"},
+    {"type": "brave_search", "query": "euro area services inflation HICP {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("EA", "energy_cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.NRGY00.4.ANR"},
+]
+INDICATOR_RESOLVERS[("EA", "food_cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.FOOD00.4.ANR"},
+]
+INDICATOR_RESOLVERS[("EA", "policy_rate")] = [
+    {"type": "ecb",          "dataset": "FM",  "key": "D.U2.EUR.4F.KR.DFR.LEV"},
+    {"type": "scrape",       "url": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/key_ecb_interest_rates/html/index.en.html",
+                              "rx": r"Deposit facility[\s\S]{0,300}?(\d+[,.]\d{1,2})\s*%"},
+]
+INDICATOR_RESOLVERS[("EA", "unemployment")] = [
+    {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "EA20",
+                              "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+]
+INDICATOR_RESOLVERS[("EA", "gdp")] = [
+    {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "EA20",
+                              "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
+]
+INDICATOR_RESOLVERS[("EA", "ppi")] = [
+    {"type": "eurostat",     "dataset_code": "sts_inpp_m", "geo": "EA20",
+                              "filters": "indic_bt=PRC_PRR&nace_r2=B-E36&s_adj=NSA&unit=RCH_A"},
+]
+INDICATOR_RESOLVERS[("EA", "retail_trade")] = [
+    {"type": "eurostat",     "dataset_code": "sts_trtu_m", "geo": "EA20",
+                              "filters": "indic_bt=TOVV&nace_r2=G47&s_adj=SCA&unit=RCH_A"},
+]
+INDICATOR_RESOLVERS[("EA", "industrial_production")] = [
+    {"type": "eurostat",     "dataset_code": "sts_inpr_m", "geo": "EA20",
+                              "filters": "indic_bt=PROD&nace_r2=B-D&s_adj=SCA&unit=RCH_A"},
+]
+
+# ─── Pass 5: United States (FRED dominant) ─────────────────────────
+INDICATOR_RESOLVERS[("US", "cpi")] = [
+    {"type": "fred",         "series_id": "CPIAUCSL", "units": "pc1"},
+    {"type": "scrape",       "url": "https://www.bls.gov/news.release/cpi.nr0.htm",
+                              "rx": r"(\d+[,.]\d)\s*percent"},
+    {"type": "brave_search", "query": "BLS US CPI inflation {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
+]
+INDICATOR_RESOLVERS[("US", "core_cpi")] = [
+    {"type": "fred",         "series_id": "CPILFESL", "units": "pc1"},
+    {"type": "brave_search", "query": "BLS US core CPI {YYYY-MM} excluding food energy",
+                              "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
+]
+INDICATOR_RESOLVERS[("US", "services_cpi")] = [
+    {"type": "fred",         "series_id": "CUSR0000SAS", "units": "pc1"},
+]
+INDICATOR_RESOLVERS[("US", "ppi")] = [
+    {"type": "fred",         "series_id": "PPIACO", "units": "pc1"},
+]
+INDICATOR_RESOLVERS[("US", "policy_rate")] = [
+    {"type": "fred",         "series_id": "DFEDTARU"},  # Fed Funds Target Upper Bound
+    {"type": "scrape",       "url": "https://www.federalreserve.gov/monetarypolicy/openmarket.htm",
+                              "rx": r"(\d+[,.]\d{1,2})\s*(?:to|–|-)?\s*(\d+[,.]\d{1,2})?\s*percent"},
+    {"type": "brave_search", "query": "Fed Funds target rate FOMC decision {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d{1,2})\s*(?:%|percent)"},
+]
+INDICATOR_RESOLVERS[("US", "unemployment")] = [
+    {"type": "fred",         "series_id": "UNRATE"},
+    {"type": "brave_search", "query": "BLS US unemployment rate {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
+]
+INDICATOR_RESOLVERS[("US", "gdp")] = [
+    {"type": "fred",         "series_id": "GDPC1", "units": "pc1"},
+    {"type": "brave_search", "query": "BEA US GDP growth {YYYY} quarterly",
+                              "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
+]
+INDICATOR_RESOLVERS[("US", "retail_trade")] = [
+    {"type": "fred",         "series_id": "RSAFS", "units": "pc1"},
+]
+INDICATOR_RESOLVERS[("US", "industrial_production")] = [
+    {"type": "fred",         "series_id": "INDPRO", "units": "pc1"},
+]
+INDICATOR_RESOLVERS[("US", "wages")] = [
+    {"type": "fred",         "series_id": "CES0500000003", "units": "pc1"},  # Average hourly earnings YoY%
+]
+INDICATOR_RESOLVERS[("US", "house_prices")] = [
+    {"type": "fred",         "series_id": "CSUSHPISA", "units": "pc1"},  # Case-Shiller national YoY%
+]
+
+# ─── Pass 6: UK ───────────────────────────────────────────────────
+INDICATOR_RESOLVERS[("GB", "cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.GB.N.000000.4.ANR"},
+    {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "UK"},
+    {"type": "brave_search", "query": "ONS UK CPI inflation rate {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("GB", "core_cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.GB.N.XEF000.4.ANR"},
+]
+INDICATOR_RESOLVERS[("GB", "unemployment")] = [
+    {"type": "brave_search", "query": "ONS UK unemployment rate {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("GB", "gdp")] = [
+    {"type": "brave_search", "query": "ONS UK GDP {YYYY} quarterly growth",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+
+# ─── Pass 7: Non-EU/EA major economies ────────────────────────────
+# These rely heavily on brave_search since ECB ICP, Eurostat and FRED
+# don't cover them natively. DBnomics has IMF IFS / OECD time series
+# for most G20 countries which we wire up too.
+_NON_EU_COUNTRIES = {
+    "JP": {"name": "Japan", "search": "BoJ Japan", "central_bank": "Bank of Japan"},
+    "CN": {"name": "China", "search": "NBS China PBoC", "central_bank": "PBoC"},
+    "KR": {"name": "South Korea", "search": "Bank of Korea KOSIS", "central_bank": "BoK"},
+    "IN": {"name": "India", "search": "RBI India MoSPI", "central_bank": "RBI"},
+    "BR": {"name": "Brazil", "search": "IBGE BCB Brazil", "central_bank": "BCB"},
+    "MX": {"name": "Mexico", "search": "INEGI Banxico Mexico", "central_bank": "Banxico"},
+    "TR": {"name": "Turkey", "search": "TUIK TCMB Turkey", "central_bank": "TCMB"},
+    "ZA": {"name": "South Africa", "search": "StatsSA SARB South Africa", "central_bank": "SARB"},
+    "AU": {"name": "Australia", "search": "ABS RBA Australia", "central_bank": "RBA"},
+    "CA": {"name": "Canada", "search": "StatsCan Bank of Canada", "central_bank": "BoC"},
+    "RU": {"name": "Russia", "search": "Rosstat CBR Russia", "central_bank": "CBR"},
+    "ID": {"name": "Indonesia", "search": "BPS Bank Indonesia", "central_bank": "BI"},
+    "SA": {"name": "Saudi Arabia", "search": "GASTAT SAMA Saudi Arabia", "central_bank": "SAMA"},
+    "AR": {"name": "Argentina", "search": "INDEC BCRA Argentina", "central_bank": "BCRA"},
+    "EG": {"name": "Egypt", "search": "CAPMAS CBE Egypt", "central_bank": "CBE"},
+    "NG": {"name": "Nigeria", "search": "NBS CBN Nigeria", "central_bank": "CBN"},
+    "TH": {"name": "Thailand", "search": "NESDC BoT Thailand", "central_bank": "BoT"},
+    "VN": {"name": "Vietnam", "search": "GSO SBV Vietnam", "central_bank": "SBV"},
+}
+for _c, _meta in _NON_EU_COUNTRIES.items():
+    _name = _meta["name"]
+    _search = _meta["search"]
+    _cb = _meta["central_bank"]
+    INDICATOR_RESOLVERS[(_c, "cpi")] = [
+        {"type": "brave_search",
+         "query": f"{_search} CPI inflation {{YYYY-MM}} annual rate",
+         "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
+        {"type": "brave_search",
+         "query": f"{_name} inflation rate {{YYYY-MM}}",
+         "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
+    ]
+    INDICATOR_RESOLVERS[(_c, "policy_rate")] = [
+        {"type": "bis", "country": _c},
+        {"type": "brave_search",
+         "query": f"{_cb} policy rate decision {{YYYY-MM}}",
+         "rx": r"(\d+[,.]\d{1,2})\s*(?:%|percent)"},
+        {"type": "brave_search",
+         "query": f"{_name} central bank interest rate {{YYYY-MM}}",
+         "rx": r"(\d+[,.]\d{1,2})\s*(?:%|percent)"},
+    ]
+    INDICATOR_RESOLVERS[(_c, "unemployment")] = [
+        {"type": "brave_search",
+         "query": f"{_search} unemployment rate {{YYYY-MM}}",
+         "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
+        {"type": "brave_search",
+         "query": f"{_name} unemployment rate {{YYYY-MM}}",
+         "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
+    ]
+    INDICATOR_RESOLVERS[(_c, "gdp")] = [
+        {"type": "brave_search",
+         "query": f"{_search} GDP growth {{YYYY}} quarterly",
+         "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
+        {"type": "brave_search",
+         "query": f"{_name} GDP growth {{YYYY}} latest",
+         "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
+    ]
+
+# Japan-specific FRED overrides (high reliability for major aggregates)
+INDICATOR_RESOLVERS[("JP", "cpi")] = [
+    {"type": "fred", "series_id": "JPNCPIALLMINMEI", "units": "pc1"},
+] + INDICATOR_RESOLVERS[("JP", "cpi")]
+INDICATOR_RESOLVERS[("JP", "unemployment")] = [
+    {"type": "fred", "series_id": "LRHUTTTTJPM156S"},
+] + INDICATOR_RESOLVERS[("JP", "unemployment")]
+INDICATOR_RESOLVERS[("JP", "policy_rate")] = [
+    {"type": "fred", "series_id": "IRSTCB01JPM156N"},
+] + INDICATOR_RESOLVERS[("JP", "policy_rate")]
+
+# Canada FRED overrides
+INDICATOR_RESOLVERS[("CA", "cpi")] = [
+    {"type": "fred", "series_id": "CPALCY01CAM659N"},
+] + INDICATOR_RESOLVERS[("CA", "cpi")]
+INDICATOR_RESOLVERS[("CA", "unemployment")] = [
+    {"type": "fred", "series_id": "LRHUTTTTCAM156S"},
+] + INDICATOR_RESOLVERS[("CA", "unemployment")]
+
+# Australia FRED overrides
+INDICATOR_RESOLVERS[("AU", "cpi")] = [
+    {"type": "fred", "series_id": "AUSCPIALLQINMEI", "units": "pc1"},
+] + INDICATOR_RESOLVERS[("AU", "cpi")]
+INDICATOR_RESOLVERS[("AU", "unemployment")] = [
+    {"type": "fred", "series_id": "LRHUTTTTAUM156S"},
+] + INDICATOR_RESOLVERS[("AU", "unemployment")]
 
 
 def _parse_period_to_date(period: str):
-    """Parse 'YYYY-MM', 'YYYY-Qn', 'YYYY-MM-DD' or 'YYYY' to a datetime."""
+    """Parse 'YYYY-MM', 'YYYY-Qn', 'YYYY-MM-DD' or 'YYYY' to a datetime.
+
+    For bare 'YYYY' equal to the current year, returns the FIRST DAY of the
+    current month — this lets year-only labels from yearly-reported tables be
+    treated as "fresh data point of this year" rather than end-of-December
+    (which would mark them stale until December).
+    """
     from datetime import datetime as _dt
     period = (period or "").strip()
     if not period:
         return None
     try:
         if len(period) == 4 and period.isdigit():
-            return _dt(int(period), 12, 31)
+            y = int(period)
+            now = _dt.now()
+            if y == now.year:
+                return _dt(y, now.month, 1)
+            return _dt(y, 12, 31)
         if len(period) == 7 and "-Q" in period:  # 2025-Q4
             y, q = period.split("-Q")
             return _dt(int(y), int(q) * 3, 28)
@@ -4727,6 +5003,14 @@ def _parse_period_to_date(period: str):
     except (ValueError, IndexError):
         return None
     return None
+
+
+# Hungarian month names → 1..12 for KSH STADAT column parsing
+_HUN_MONTHS: dict[str, int] = {
+    "január": 1, "február": 2, "március": 3, "április": 4,
+    "május": 5, "június": 6, "július": 7, "augusztus": 8,
+    "szeptember": 9, "október": 10, "november": 11, "december": 12,
+}
 
 
 def _is_fresh(period: str, max_age_days: int) -> bool:
@@ -4914,7 +5198,12 @@ async def _resolver_fred(spec: dict) -> Optional[dict]:
 
 
 async def _resolver_ksh_stadat(spec: dict) -> Optional[dict]:
-    """Resolver: KSH STADAT. yoy_from_index=True for base-index → YoY%."""
+    """Resolver: KSH STADAT — parses transposed monthly tables and (optionally)
+    converts base-index values to YoY% by dividing by the previous-year cell.
+
+    Returns the freshest non-empty (year, month) cell. If yoy_from_index=True,
+    the value is (current_year / previous_year - 1) * 100 for the matching month.
+    """
     raw = await get_ksh_stadat(table_code=spec["table_code"], max_rows=36)
     try:
         d = json.loads(raw)
@@ -4923,18 +5212,68 @@ async def _resolver_ksh_stadat(spec: dict) -> Optional[dict]:
     rows = d.get("data") or []
     if not rows:
         return None
-    # The KSH parser sometimes returns empty cells for the latest months — find
-    # the first non-empty value across the most recent rows.
+    # Build year → {month_idx: value} lookup (parsing Hungarian month names from
+    # column headers). Many KSH transposed tables have columns like
+    # "Eredeti maginfláció április" or "Fogyasztóiár-index ... január".
+    by_year: dict[int, dict[int, float]] = {}
     for row in rows:
+        year_raw = row.get("Év") or row.get("Év Az előző év azonos időszaka = 100,0%") or ""
+        try:
+            year = int(str(year_raw).strip()[:4])
+        except (ValueError, TypeError):
+            continue
         for col, val in row.items():
-            if isinstance(val, (int, float)) and val > 0:
-                return {
-                    "value": val,
-                    "period": str(row.get("Év", "")),
-                    "source": f"KSH STADAT {spec['table_code']}",
-                    "note": "raw base-index — YoY conversion may be required" if spec.get("yoy_from_index") else None,
-                }
-    return None
+            if not isinstance(val, (int, float)) or val == 0:
+                continue
+            col_low = col.lower()
+            for hu_month, m_idx in _HUN_MONTHS.items():
+                if hu_month in col_low:
+                    by_year.setdefault(year, {})[m_idx] = float(val)
+                    break
+
+    if not by_year:
+        # Fall back: first non-zero value found in the first row (no month parsing)
+        for row in rows:
+            for col, val in row.items():
+                if isinstance(val, (int, float)) and val > 0:
+                    return {
+                        "value": float(val),
+                        "period": str(row.get("Év", "")),
+                        "source": f"KSH STADAT {spec['table_code']}",
+                    }
+        return None
+
+    # Find the most recent (year, month) cell
+    latest_year = max(by_year)
+    latest_month = max(by_year[latest_year])
+    latest_value = by_year[latest_year][latest_month]
+    period = f"{latest_year}-{latest_month:02d}"
+
+    if spec.get("yoy_from_index"):
+        # Convert base-index to YoY% by comparing to prev_year same month
+        prev = by_year.get(latest_year - 1, {}).get(latest_month)
+        if prev and prev > 0:
+            yoy = round((latest_value / prev - 1) * 100, 2)
+            return {
+                "value": yoy,
+                "period": period,
+                "source": f"KSH STADAT {spec['table_code']} (YoY% computed from base-index)",
+                "raw_index": latest_value,
+                "prev_year_index": prev,
+            }
+        # No prev-year reference — return raw with a flag
+        return {
+            "value": latest_value,
+            "period": period,
+            "source": f"KSH STADAT {spec['table_code']}",
+            "note": "raw base-index — prev-year reference not in data window",
+        }
+
+    return {
+        "value": latest_value,
+        "period": period,
+        "source": f"KSH STADAT {spec['table_code']}",
+    }
 
 
 async def _resolver_scrape(spec: dict) -> Optional[dict]:
