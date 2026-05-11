@@ -4529,7 +4529,8 @@ _FRESHNESS_DAYS: dict[str, int] = {
     "food_cpi": 60,
     "policy_rate": 75,   # Monthly meetings; flash decision page must be <2.5mo
     "unemployment": 75,  # Monthly, published with 1–2 month lag (Eurostat)
-    "gdp": 150,          # Quarterly, published 6–8 weeks after quarter-end
+    "gdp": 150,          # Quarterly absolute value
+    "gdp_growth": 150,   # Quarterly YoY%
     "ppi": 60,           # Monthly producer prices
     "wages": 90,         # Monthly with longer lag (Eurostat quarterly)
     "retail_trade": 75,
@@ -4537,6 +4538,7 @@ _FRESHNESS_DAYS: dict[str, int] = {
     "trade_balance": 90,
     "gov_debt": 180,     # Quarterly, often a quarter lag
     "house_prices": 180,
+    "bond_yield_10y": 60,  # Daily/monthly; long-term Maastricht yield
 }
 
 # Per-(country, indicator) resolver chain. Each resolver is a dict with `type`
@@ -4561,14 +4563,25 @@ _FRESHNESS_DAYS: dict[str, int] = {
 # current month is usually not yet published) and {YYYY} placeholders.
 
 
+# Non-euro currency codes for ECB IRS bond-yield series. Eurozone members
+# all use EUR; others have their own ISO-4217 code (Maastricht series uses
+# the national currency).
+_CCY_FOR_COUNTRY: dict[str, str] = {
+    "HU": "HUF", "CZ": "CZK", "PL": "PLN", "RO": "RON",
+    "SE": "SEK", "DK": "DKK", "NO": "NOK", "CH": "CHF", "GB": "GBP",
+    "BG": "BGN", "HR": "EUR",  # HR adopted EUR 2023
+}
+
+
 def _eu_country_resolvers(c: str) -> dict[str, list[dict]]:
-    """Standard 8-indicator resolver block for an EU/EEA country.
+    """Standard 10+ indicator resolver block for an EU/EEA country.
 
     Coverage: cpi, core_cpi, services_cpi, energy_cpi, food_cpi, ppi,
-    unemployment, gdp, retail_trade, industrial_production. All resolvers
-    chain ECB ICP → Eurostat → generic brave_search; country-specific
-    overrides (national stats office scrape, native-language queries) are
-    layered ON TOP after this generator.
+    unemployment, gdp, gdp_growth, bond_yield_10y, retail_trade,
+    industrial_production, trade_balance, gov_debt. All resolvers chain
+    ECB ICP → Eurostat → generic brave_search; country-specific overrides
+    (national stats office scrape, native-language queries) are layered
+    ON TOP after this generator.
     """
     return {
         "cpi": [
@@ -4614,8 +4627,22 @@ def _eu_country_resolvers(c: str) -> dict[str, list[dict]]:
             {"type": "eurostat", "dataset_code": "namq_10_gdp", "geo": c,
              "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
             {"type": "brave_search",
-             "query": f"GDP growth {c} {{YYYY}} flash estimate Eurostat",
-             "rx": r"(\d+[,.]\d)\s*%"},
+             "query": f"GDP {c} {{YYYY}} quarterly billion EUR Eurostat",
+             "rx": r"(\d[\d,. ]{2,})"},
+        ],
+        "gdp_growth": [
+            {"type": "eurostat", "dataset_code": "namq_10_gdp", "geo": c,
+             "filters": "na_item=B1GQ&unit=CLV_PCH_PRE&s_adj=SCA"},
+            {"type": "brave_search",
+             "query": f"GDP growth rate {c} {{YYYY}} quarterly percent change Eurostat",
+             "rx": r"(-?\d+[,.]\d)\s*%"},
+        ],
+        "bond_yield_10y": [
+            {"type": "ecb", "dataset": "IRS",
+             "key": f"M.{c}.L.L40.CI.0000.{_CCY_FOR_COUNTRY.get(c, 'EUR')}.N.Z"},
+            {"type": "brave_search",
+             "query": f"{c} 10-year government bond yield {{YYYY-MM}}",
+             "rx": r"(\d+[,.]\d{1,3})\s*%"},
         ],
         "retail_trade": [
             {"type": "eurostat", "dataset_code": "sts_trtu_m", "geo": c},
@@ -4714,10 +4741,18 @@ INDICATOR_RESOLVERS[("HU", "core_cpi")] = [
 ]
 INDICATOR_RESOLVERS[("HU", "services_cpi")] = [
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.SERV00.4.ANR"},
+    # Hivatalos forrás-preferencia: MNB → KSH → eurostat → general fallback
+    {"type": "brave_search", "query": "szolgáltatás infláció {YYYY-MM} havi",
+                              "site": "mnb.hu",
+                              "rx": r"szolgáltatás[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "szolgáltatás infláció {YYYY-MM}",
+                              "site": "ksh.hu",
+                              "rx": r"szolgáltatás[\s\S]{0,300}?(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "Hungary services inflation HICP {YYYY-MM}",
+                              "site": "ec.europa.eu",
+                              "rx": r"(\d+[,.]\d)\s*%"},
     {"type": "brave_search", "query": "MNB Inflációs Jelentés szolgáltatás infláció {YYYY}",
                               "rx": r"szolgáltatás[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
-    {"type": "brave_search", "query": "HU services inflation {YYYY-MM} HICP",
-                              "rx": r"(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("HU", "unemployment")] = [
     {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "HU",
@@ -4732,8 +4767,16 @@ INDICATOR_RESOLVERS[("HU", "gdp")] = [
                               "rx": r"(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("HU", "policy_rate")] = [
-    {"type": "scrape",       "url": "https://www.mnb.hu/sajtoszoba/sajtokozlemenyek",
-                              "rx": r"(?:irányadó kamat|alapkamat|jegybanki[\s\w]*kamat)[\s\S]{0,400}?(\d+[,.]\d{1,2})\s*%"},
+    # Direct scrape attempts — JS-rendered, brave-mcp Puppeteer handles
+    {"type": "scrape",       "url": "https://www.mnb.hu/Jegybanki_alapkamat_alakulasa",
+                              "rx": r"(?:alapkamat|irányadó kamat|jegybanki[\s\w]*kamat)[\s\S]{0,400}?(\d+[,.]\d{1,2})\s*%"},
+    {"type": "scrape",       "url": "https://www.mnb.hu/jegybanki-alapkamat-alakulasa",
+                              "rx": r"(?:alapkamat|irányadó kamat|jegybanki[\s\w]*kamat)[\s\S]{0,400}?(\d+[,.]\d{1,2})\s*%"},
+    # Hivatalos forrás preferencia: csak mnb.hu
+    {"type": "brave_search", "query": "MNB irányadó kamat alapkamat {YYYY-MM} monetáris tanács döntés",
+                              "site": "mnb.hu",
+                              "rx": r"(\d+[,.]\d{1,2})\s*%"},
+    # Általános HU fallback (Portfolio/VG másodlagos, de friss)
     {"type": "brave_search", "query": "MNB irányadó kamat alapkamat {YYYY-MM} monetáris tanács döntés",
                               "rx": r"(\d+[,.]\d{1,2})\s*%"},
     {"type": "brave_search", "query": "MNB base rate Hungary {YYYY-MM} policy decision",
@@ -5371,13 +5414,23 @@ async def get_macro_indicator(
         country: ISO-2 country code (HU, DE, FR, IT, ES, EA, US, GB, ...).
                  EA = euro area aggregate (uses ECB U2 / Eurostat EA20).
         indicator: One of:
-                   "cpi"           — headline HICP annual rate of change (%)
-                   "core_cpi"      — core HICP (excl. energy & food), YoY%
-                   "services_cpi"  — HICP services component, YoY%
-                   "policy_rate"   — central bank policy rate (%)
-                   "unemployment"  — unemployment rate (%)
-                   "gdp"           — GDP growth (real, YoY% — quarterly)
-                   "ppi"           — producer prices YoY% (if available)
+                   "cpi"             — headline HICP annual rate of change (%)
+                   "core_cpi"        — core HICP (excl. energy & food), YoY%
+                   "services_cpi"    — HICP services component, YoY%
+                   "energy_cpi"      — HICP energy component, YoY%
+                   "food_cpi"        — HICP food component, YoY%
+                   "policy_rate"     — central bank policy rate (%)
+                   "unemployment"    — unemployment rate (%)
+                   "gdp"             — GDP absolute level (€M CLV15, SCA quarterly)
+                   "gdp_growth"      — GDP quarter-on-quarter %-change (SCA)
+                   "ppi"             — producer prices YoY%
+                   "wages"           — average wage / earnings index
+                   "retail_trade"    — retail trade volume index
+                   "industrial_production" — industrial production index
+                   "trade_balance"   — external trade balance
+                   "gov_debt"        — general gov. debt-to-GDP ratio (%)
+                   "house_prices"    — house price index YoY%
+                   "bond_yield_10y"  — 10Y Maastricht government bond yield (%)
         freshness_days: Override the default freshness threshold (CPI 60d,
                         policy_rate 75d, unemployment 75d, gdp 120d).
                         Use 0 (default) for the indicator default.
