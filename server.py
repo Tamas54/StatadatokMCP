@@ -4741,16 +4741,12 @@ INDICATOR_RESOLVERS[("HU", "core_cpi")] = [
 ]
 INDICATOR_RESOLVERS[("HU", "services_cpi")] = [
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.SERV00.4.ANR"},
-    # Hivatalos forrás-preferencia: MNB → KSH → eurostat → general fallback
     {"type": "brave_search", "query": "szolgáltatás infláció {YYYY-MM} havi",
                               "site": "mnb.hu",
-                              "rx": r"szolgáltatás[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
-    {"type": "brave_search", "query": "szolgáltatás infláció {YYYY-MM}",
-                              "site": "ksh.hu",
                               "rx": r"szolgáltatás[\s\S]{0,300}?(\d+[,.]\d)\s*%"},
-    {"type": "brave_search", "query": "Hungary services inflation HICP {YYYY-MM}",
-                              "site": "ec.europa.eu",
-                              "rx": r"(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "KSH szolgáltatás infláció {YYYY-MM}",
+                              "site": "ksh.hu",
+                              "rx": r"szolgáltatás[\s\S]{0,400}?(\d+[,.]\d)\s*%"},
     {"type": "brave_search", "query": "MNB Inflációs Jelentés szolgáltatás infláció {YYYY}",
                               "rx": r"szolgáltatás[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
 ]
@@ -4881,6 +4877,24 @@ INDICATOR_RESOLVERS[("EA", "industrial_production")] = [
     {"type": "eurostat",     "dataset_code": "sts_inpr_m", "geo": "EA20"},
     {"type": "brave_search", "query": "euro area industrial production {YYYY-MM} Eurostat",
                               "rx": r"(-?\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("EA", "gdp_growth")] = [
+    {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "EA20",
+                              "filters": "na_item=B1GQ&unit=CLV_PCH_PRE&s_adj=SCA"},
+    {"type": "brave_search", "query": "euro area GDP growth {YYYY} quarter-on-quarter Eurostat",
+                              "rx": r"(-?\d+[,.]\d)\s*%"},
+]
+INDICATOR_RESOLVERS[("EA", "bond_yield_10y")] = [
+    {"type": "ecb",          "dataset": "IRS", "key": "M.U2.L.L40.CI.0000.EUR.N.Z"},
+    {"type": "brave_search", "query": "euro area 10-year government bond yield {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d{1,3})\s*%"},
+]
+INDICATOR_RESOLVERS[("EA", "gov_debt")] = [
+    {"type": "eurostat",     "dataset_code": "gov_10q_ggdebt", "geo": "EA20",
+                              "filters": "unit=PC_GDP&sector=S13"},
+]
+INDICATOR_RESOLVERS[("EA", "trade_balance")] = [
+    {"type": "eurostat",     "dataset_code": "ext_lt_intertrd", "geo": "EA20"},
 ]
 
 # ─── Pass 5: United States (FRED dominant) ─────────────────────────
