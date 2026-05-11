@@ -4724,29 +4724,54 @@ for _c, _scrape_list in _POLICY_RATE_SCRAPE_URLS.items():
 
 # Hungary — Magyar nyelvű brave queryk és KSH-stadat fallback
 INDICATOR_RESOLVERS[("HU", "cpi")] = [
+    # ELSŐ: KSH gyorstájékoztató — célzott YoY-mondat
+    # "...fogyasztói árak átlagosan 2,1 %-kal haladták meg az egy évvel korábbi értékeket"
+    {"type": "ksh_flash",    "topic": "far",
+                              "rx": r"fogyasztói\s+árak[\s\S]{0,80}?átlagosan\s+(\d+[,.]\d)\s*%"},
+    {"type": "ksh_flash",    "topic": "far",
+                              "rx": r"(\d+[,.]\d)\s*%[\s\-]*kal\s+haladt[áa]k?\s+meg\s+az\s+egy\s+évvel"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.000000.4.ANR"},
     {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "HU"},
     {"type": "brave_search", "query": "KSH fogyasztói árak {YYYY-MM} infláció",
+                              "site": "ksh.hu",
                               "rx": r"(\d+[,.]\d)\s*%"},
     {"type": "brave_search", "query": "HU CPI inflation {YYYY-MM} headline",
                               "rx": r"(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("HU", "core_cpi")] = [
+    # ELSŐ: KSH gyorstájékoztató maginfláció sora
+    {"type": "ksh_flash",    "topic": "far",
+                              "rx": r"[Mm]aginfláció[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.XEF000.4.ANR"},
     {"type": "ksh_stadat",   "table_code": "ara0045", "yoy_from_index": True},
-    {"type": "brave_search", "query": "KSH maginfláció {YYYY-MM} core",
-                              "rx": r"(\d+[,.]\d)\s*%"},
     {"type": "brave_search", "query": "MNB maginfláció {YYYY-MM}",
-                              "rx": r"(\d+[,.]\d)\s*%"},
+                              "site": "mnb.hu",
+                              "rx": r"maginfláció[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
+]
+# Food and energy CPI from KSH flash as well — célzott YoY-mintával
+INDICATOR_RESOLVERS[("HU", "food_cpi")] = [
+    {"type": "ksh_flash",    "topic": "far",
+                              "rx": r"élelmiszerek?\s+ára\s+(\d+[,.]\d)\s*%[\s\-]*kal\s+(?:nőtt|emelkedett|drágult|csökkent)"},
+    {"type": "ksh_flash",    "topic": "far",
+                              "rx": r"Élelmiszerek?\s+(\d+[,.]\d)\s*%"},
+    {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.FOOD00.4.ANR"},
+]
+INDICATOR_RESOLVERS[("HU", "energy_cpi")] = [
+    {"type": "ksh_flash",    "topic": "far",
+                              "rx": r"háztartási\s+energi[áa](?:ért)?\s+(\d+[,.]\d)\s*%"},
+    {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.NRGY00.4.ANR"},
 ]
 INDICATOR_RESOLVERS[("HU", "services_cpi")] = [
+    # ELSŐ: KSH gyorstájékoztató YoY-mondat
+    # "A szolgáltatások 4,0 %-kal drágultak" — egyértelmű YoY-minta
+    {"type": "ksh_flash",    "topic": "far",
+                              "rx": r"A\s*(?:&nbsp;\s*)?szolgáltatások\s+(\d+[,.]\d)\s*%[\s\-]*kal\s+drágult"},
+    {"type": "ksh_flash",    "topic": "far",
+                              "rx": r"szolgáltatások\s+(\d+[,.]\d)\s*%[\s\-]*kal\s+(?:drágult|csökkent|nőtt)"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.SERV00.4.ANR"},
     {"type": "brave_search", "query": "szolgáltatás infláció {YYYY-MM} havi",
                               "site": "mnb.hu",
                               "rx": r"szolgáltatás[\s\S]{0,300}?(\d+[,.]\d)\s*%"},
-    {"type": "brave_search", "query": "KSH szolgáltatás infláció {YYYY-MM}",
-                              "site": "ksh.hu",
-                              "rx": r"szolgáltatás[\s\S]{0,400}?(\d+[,.]\d)\s*%"},
     {"type": "brave_search", "query": "MNB Inflációs Jelentés szolgáltatás infláció {YYYY}",
                               "rx": r"szolgáltatás[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
 ]
@@ -5150,8 +5175,10 @@ async def _brave_mcp_post(tool_name: str, arguments: dict, timeout: float = 90.0
 
 async def _scrape_extract_value(url: str, rx: str) -> Optional[dict]:
     """Scrape a URL (JS-rendered via brave-mcp if available, else plain httpx),
-    and extract the first regex match as a float value. Returns
-    {value, raw_match, period (today), source_url} or None.
+    and extract the first regex match as a float value. Tries multiple
+    encodings (utf-8 → iso-8859-2 → windows-1250) because Hungarian sites
+    often serve latin2-encoded HTML without a BOM and httpx's auto-decode
+    mangles characters like 'ő' / 'ű'.
     """
     text = ""
     if BRAVE_MCP_URL:
@@ -5159,15 +5186,31 @@ async def _scrape_extract_value(url: str, rx: str) -> Optional[dict]:
         if result:
             text = result.get("markdown") or result.get("text") or ""
     if not text:
-        # Fallback: plain httpx (works for static HTML)
         client = await get_client()
         try:
             r = await client.get(url, timeout=20.0, follow_redirects=True,
                                  headers={"User-Agent": "StatData/1.0"})
-            if r.status_code == 200:
-                # Strip HTML tags crudely
-                text = re.sub(r"<[^>]+>", " ", r.text)
-                text = re.sub(r"\s+", " ", text)
+            if r.status_code != 200:
+                return None
+            # Try decoding with multiple Hungarian-likely encodings; pick the one
+            # that produces no replacement chars in the expected accented-letter
+            # ranges. Defaults to utf-8.
+            raw_bytes = r.content
+            for enc in ("utf-8", "iso-8859-2", "windows-1250", "iso-8859-1"):
+                try:
+                    candidate = raw_bytes.decode(enc)
+                except (UnicodeDecodeError, LookupError):
+                    continue
+                # Heuristic: real Hungarian text contains "á", "é", "ő"
+                if any(c in candidate for c in ("á", "é", "ő", "ű", "ó")):
+                    text = candidate
+                    break
+            if not text:
+                # Last-resort fall back to httpx's auto-decode
+                text = r.text
+            # Strip HTML tags
+            text = re.sub(r"<[^>]+>", " ", text)
+            text = re.sub(r"\s+", " ", text)
         except Exception as e:
             logger.warning("scrape httpx fallback failed for %s: %s", url, e)
 
@@ -5186,7 +5229,7 @@ async def _scrape_extract_value(url: str, rx: str) -> Optional[dict]:
     from datetime import datetime as _dt
     return {
         "value": val,
-        "period": _dt.now().strftime("%Y-%m-%d"),  # treat scrape as "current"
+        "period": _dt.now().strftime("%Y-%m-%d"),
         "raw_match": m.group(0),
         "source_url": url,
     }
@@ -5377,6 +5420,53 @@ async def _resolver_brave_search(spec: dict) -> Optional[dict]:
     return res
 
 
+async def _resolver_ksh_flash(spec: dict) -> Optional[dict]:
+    """Resolver: direct KSH gyorstájékoztató scrape.
+
+    KSH publishes monthly flash reports at the stable URL pattern
+    https://www.ksh.hu/gyorstajekoztatok/{topic}/{topic}{YY}{MM}.html
+    (e.g. far2604.html = 2026 April consumer prices flash).
+
+    Tries the current month down to N months back; the first successful
+    scrape + regex match wins. Returns {value, period, source_url, source}.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    topic = spec["topic"]
+    rx = spec["rx"]
+    max_months_back = spec.get("max_back", 4)
+    now = _dt.now()
+    # Generate candidate URLs from current month back to N months prior
+    seen = set()
+    candidates: list[tuple[str, str]] = []  # (period, url)
+    for back in range(max_months_back + 1):
+        # Compute the year/month back-by-N
+        m_idx = now.month - back
+        y = now.year
+        while m_idx <= 0:
+            m_idx += 12
+            y -= 1
+        yy = f"{y % 100:02d}"
+        mm = f"{m_idx:02d}"
+        key = (yy, mm)
+        if key in seen:
+            continue
+        seen.add(key)
+        url = f"https://www.ksh.hu/gyorstajekoztatok/{topic}/{topic}{yy}{mm}.html"
+        candidates.append((f"{y}-{mm}", url))
+
+    for period, url in candidates:
+        try:
+            result = await _scrape_extract_value(url, rx)
+        except Exception:
+            continue
+        if result and result.get("value") is not None:
+            result["period"] = period
+            result["source"] = f"KSH flash {topic} {period}"
+            result["source_url"] = url
+            return result
+    return None
+
+
 async def _resolver_bis(spec: dict) -> Optional[dict]:
     """Resolver: BIS WS_CBPOL via DBnomics (used as policy-rate fallback)."""
     raw = await get_policy_rates(countries=spec["country"], limit=3)
@@ -5400,6 +5490,7 @@ _RESOLVERS = {
     "eurostat": _resolver_eurostat,
     "fred": _resolver_fred,
     "ksh_stadat": _resolver_ksh_stadat,
+    "ksh_flash": _resolver_ksh_flash,
     "scrape": _resolver_scrape,
     "brave_search": _resolver_brave_search,
     "bis": _resolver_bis,
