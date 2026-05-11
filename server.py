@@ -1910,6 +1910,168 @@ _HUN_MONTHS_DESC: list[tuple[str, int]] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Concept help — magyar makró-szótár a sub-agenteknek
+# ---------------------------------------------------------------------------
+_HELP_CONCEPTS: dict[str, dict] = {
+    "yoy": {
+        "name": "YoY (year-over-year, éves alapú változás)",
+        "definition": "Egy mutató az előző év azonos időszakához viszonyítva. Inflációnál (CPI, HICP) ez a standard.",
+        "formula": "yoy_pct = (current / same_period_year_ago - 1) * 100",
+        "example": "2026-04 CPI 102,1 indexpont vs 2025-04 100,0 → YoY = +2,1%",
+        "tips": [
+            "A KSH gyorstájékoztatókban az 'éves' oszlop (jellemzően 100=előző év) MÁR a YoY-index — kivond 100-ból (102,1 → +2,1%).",
+            "Az Eurostat prc_hicp_manr 'value' mezője KÖZVETLENÜL YoY% — ne számolj újra.",
+            "Bázishatás: ha 1 évvel korábban kiugró érték volt, a YoY torzulhat. Ellenőrizd a Y-2 sávot is.",
+        ],
+    },
+    "qoq": {
+        "name": "QoQ (quarter-over-quarter, negyedéves változás)",
+        "definition": "Egy negyedéves mutató az előző negyedévhez viszonyítva. GDP-nél a standard rövid távú indikátor.",
+        "formula": "qoq_pct = (Qn / Qn-1 - 1) * 100",
+        "example": "HU GDP 2026-Q1 36 206,8 mEUR vs 2025-Q4 35 916,2 mEUR → QoQ = +0,81%",
+        "tips": [
+            "Mindig szezonálisan kiigazított (s_adj=SCA) sorozatból számolj — nyers QoQ zajos.",
+            "Annualizált QoQ: (1 + qoq)^4 − 1 — explicit jelöld ha annualizálsz.",
+            "Az Eurostat namq_10_gdp unit=CLV_PCH_PRE már pre-kalkulált QoQ% mező.",
+        ],
+    },
+    "mom": {
+        "name": "MoM (month-over-month, havi változás)",
+        "definition": "Havi mutató előző hónaphoz. Inflációs fordulópont-érzékelésre, de zajos.",
+        "formula": "mom_pct = (current_month / previous_month - 1) * 100",
+        "example": "KSH CPI 2026-04 100,4 (= +0,4% MoM)",
+        "tips": [
+            "Ha MoM-ot idézel, EXPLICIT mondd ki 'havi alapon' — könnyű YoY-jal összekeverni.",
+            "Annualizált MoM: (1 + mom)^12 − 1 — vigyázz, kis MoM zaj nagyot annualizálódik.",
+        ],
+    },
+    "hicp_vs_cpi": {
+        "name": "HICP vs nemzeti CPI (HU specifikum)",
+        "definition": "Két eltérő mutató ugyanarra a hónapra: HICP (Eurostat-harmonizált) és CPI (KSH nemzeti).",
+        "key_difference": (
+            "KSH CPI: magyar fogyasztói kosár, lakossági súlyozás. "
+            "HICP (harmonizált): EU-szabványos kosár, tartalmazza a turisták kiadását is, kisebb lakberendezési és pénzügyi szolgáltatás-súly."
+        ),
+        "typical_gap": "HU-ra a HICP tipikusan 0,3-0,5 pp magasabb mint a KSH CPI.",
+        "example": "2026-04: KSH CPI +2,1%, HU HICP +2,6% (KSH flash publikálja MINDKETTŐT).",
+        "tips": [
+            "Hazai vásárlóerő/MNB-cél: KSH CPI használata.",
+            "EU-összehasonlítás (eurozóna vs HU): HICP használata.",
+            "NE keverd egy mondatban: 'a HU infláció X%' félreérthető — mondd 'KSH CPI' vagy 'HICP'.",
+        ],
+    },
+    "coicop_2": {
+        "name": "COICOP 2.0 / ECOICOP 2 (Eurostat HICP klasszifikáció)",
+        "definition": "Új fogyasztási osztályozás, amelyet az Eurostat 2026-01-tól vezetett be a HICP-re.",
+        "impact": (
+            "A 2026-tól publikált HICP-értékek ÚJ klasszifikációval és súlyozással készülnek; "
+            "a 2025-ös és korábbi értékekkel NEM teljesen összehasonlítható az idősor."
+        ),
+        "tips": [
+            "Ha 2025-ös és 2026-os HICP-t hasonlítasz össze, EXPLICIT jelöld a módszertani törést.",
+            "A statdata_macro response 'methodology_note' mezőt ad COICOP 2.0-hoz minden 2026+ HICP-re.",
+            "Az aggregált EA HICP esetén a hatás kicsi (~0,1 pp); országonként eltérhet.",
+        ],
+    },
+    "core_cpi": {
+        "name": "Maginfláció / core CPI",
+        "definition": "Energia- és élelmiszerár-ingadozásoktól megtisztított infláció. A jegybankok ezt nézik elsősorban.",
+        "tips": [
+            "Az MNB középtávú célja a maginflációra van rögzítve (3,0% ±1 pp).",
+            "A KSH ara0045 'Eredeti maginfláció' bázis-index (100=előző év azonos időszaka) — kivond 100-ból a YoY%-ért.",
+            "Az ECB ICP M.HU.N.XEF000.4.ANR series 'excluding energy and food' tárol már YoY%-ot.",
+            "A KSH gyorstájékoztató külön publikálja 'Maginfláció' sorban (a táblázat YoY-oszlopa = 100+x).",
+        ],
+    },
+    "services_cpi": {
+        "name": "Szolgáltatás-infláció",
+        "definition": "A HICP/CPI 'szolgáltatások' alkomponense. A bérek inflációba gyűrűzése itt látszik leghamarabb.",
+        "tips": [
+            "A szolgáltatás-infláció 'sticky' (lassan csökken) — a headline CPI dezinflációs pályája gyakran megelőzi.",
+            "HU 2026-04: szolgáltatás CPI +4,0% (KSH flash) — kétszerese a headline-nak.",
+            "A KSH STADAT csak éves bontásban publikálja külön táblában; a flash-ben viszont havi adat.",
+        ],
+    },
+    "stale_data": {
+        "name": "Stale (elavult) adat",
+        "definition": "Olyan strukturált API-adatpont, ami túl régi a publikálási konvencióhoz képest.",
+        "tips": [
+            "A BIS WS_CBPOL gyakran 6-12 hónapos lemaradással; a fő rates mezőben már fel van oldva fresh forrással.",
+            "Ha a status='stale', a value MÉG a legfrissebb elérhető — de értelmezésnél jelöld.",
+            "A 'fallback_chain' a router próbálkozásait listázza; korábbi stale-eket NE flag-eld 'hiányzó forrásnak'.",
+        ],
+    },
+    "flash_estimate": {
+        "name": "Flash becslés (preliminary/early estimate)",
+        "definition": "Az adott időszak gyors, előzetes publikációja — gyakran a final/revízió előtt 2-4 héttel.",
+        "tips": [
+            "Eurostat HICP flash: '/w/2-{DDMM}{YYYY}-ap' URL, kb. hónap-végén.",
+            "Final country breakdown: '/w/2-{DDMM}{YYYY}-cp' URL, kb. 17-19-én.",
+            "A flash érték revízióra kerülhet ±0,1 pp-vel.",
+            "Az is_flash=True mező jelzi a router-válaszban.",
+        ],
+    },
+    "nominal_vs_real": {
+        "name": "Nominális vs reál érték",
+        "definition": "Nominális: pénzértékben, inflációval. Reál: inflációval kiszűrve.",
+        "tips": [
+            "GDP-növekedéshez REÁL (CLV15_MEUR vagy chain-linked) — soha nominál.",
+            "Adósság/GDP ráta lehet nominál (mindkét oldal aktuális ár).",
+            "Reálbér: nominálbér / (1 + cum_inflation).",
+            "Az Eurostat namq_10_gdp unit=CLV15_MEUR már reál (2015-ös bázis).",
+        ],
+    },
+    "decision_date": {
+        "name": "decision_date (jegybanki döntés időpontja)",
+        "definition": "A Monetáris Tanács/Governing Council legutóbbi kamatdöntésének dátuma — eltér a scrape-időponttól.",
+        "tips": [
+            "A 'period' a scrape napja (mai); a 'decision_date' a tényleges ülésnap.",
+            "HU: MNB 2026-04-28-i döntés a 6,25%-ról. Következő ülés 2026-05-26.",
+            "Bevett idézési mód: 'MNB irányadó kamat 6,25% (2026. április 28-i döntés)'.",
+        ],
+    },
+    "seasonal_adjustment": {
+        "name": "Szezonális kiigazítás (SA / SCA / NSA)",
+        "definition": "Az ismétlődő évszaki hatás (turizmus, fűtés stb.) eltávolítása a sorozatból.",
+        "tips": [
+            "Eurostat: SA = seasonally adjusted, SCA = seasonally and calendar adjusted (legtisztább), NSA = nem kiigazított.",
+            "Negyedéves GDP-hez mindig SCA — egyébként szezonális zaj torzít.",
+            "Havi munkanélküliség: SA — szezonális hatás (mezőgazdasági munkanélküli ősszel, nyári diákmunka) eltávolítva.",
+        ],
+    },
+    "clv15": {
+        "name": "CLV15_MEUR (chain-linked volume, 2015-ös referencia)",
+        "definition": "Reál érték millió euróban, 2015 = bázis. Mennyiségi (volumen) változás, inflációtól mentes.",
+        "tips": [
+            "Eurostat namq_10_gdp default unit a növekedési ütem mérésére.",
+            "Az abszolút szám (pl. 36 206,8 mEUR) önmagában értelmetlen — YoY/QoQ kell.",
+            "A statdata router 'derived' blokk pre-kalkulálja a YoY-t.",
+        ],
+    },
+    "ksh_flash_pattern": {
+        "name": "KSH gyorstájékoztatók (URL-pattern)",
+        "definition": "A KSH havi/negyedéves gyorstájékoztatókat stabil URL-mintán publikálja.",
+        "tips": [
+            "URL: https://www.ksh.hu/gyorstajekoztatok/{topic}/{topic}{YY}{MM}.html",
+            "Témakódok: far (fogyasztói árak), ipi (ipari termelés), mun (munkaerőpiac), gdp (GDP), kik (kiskereskedelem), kkr (külkereskedelem), tur (turizmus), ber (kereset), epi (építőipar).",
+            "Pl. 'far2604.html' = 2026-04-i fogyasztói árak.",
+            "A get_macro_indicator és get_flash_releases ezt a mintát használja.",
+        ],
+    },
+    "eu_country_codes": {
+        "name": "Ország-kódok (EU-szabványok)",
+        "tips": [
+            "ECB SDMX: 2-betűs ISO (HU, DE, FR, IT, ES, U2=eurozóna).",
+            "Eurostat: 2-betűs ISO + EA20/EA21 az eurozóna-aggregate (EA21 2026-01-óta Bulgaria belépésével).",
+            "IMF SDMX: 3-betűs ISO (HUN, DEU, FRA, USA).",
+            "BIS: 2-betűs ISO + XM az eurozóna.",
+            "FRED: country-specific series ID (pl. JPNCPIALLMINMEI Japan CPI).",
+        ],
+    },
+}
+
+
 def _pivot_ksh_to_long(rows: list[dict], headers: list[str]) -> list[dict]:
     """Convert a KSH STADAT wide-matrix table to long-format rows.
 
@@ -4089,6 +4251,54 @@ def get_economic_calendar(
         "total_events": len(events),
         "events": events,
     }, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Concept help lookup (LLM-stencil a makró-konvenciókhoz)
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def statdata_help(concept: str = "") -> str:
+    """Makró-konvenciók és gyakori számítási hibák magyarázata.
+
+    Egy egyszerű lookup, ami a sub-agent-eknek (különösen Kimi/GLM5) ad
+    'kívülről' stencilt a brief elején. Lefedi: YoY, QoQ, MoM, HICP_vs_CPI,
+    COICOP_2.0, maginfláció, szolgáltatás-infláció, stale-adat, flash becslés,
+    nominális vs reál, decision_date, szezonális kiigazítás, CLV15, KSH
+    gyorstájékoztató URL-minták, ország-kódok EU/IMF/BIS-konvenciói.
+
+    Args:
+        concept: A keresett fogalom. Üres = összes fogalom listája.
+                 Pl. "YoY", "HICP_vs_CPI", "COICOP_2.0", "core_cpi",
+                 "stale_data", "flash_estimate", "decision_date".
+                 Aliasok támogatva: lowercase, '_'/'-'/' ' egyenértékű.
+
+    Returns:
+        JSON szótár a fogalom meghatározásával, formulájával, példáival és
+        tipikus hibákkal. Üres concept esetén az összes elérhető kulcs listája.
+    """
+    if not concept or not concept.strip():
+        return json.dumps({
+            "available_concepts": sorted(_HELP_CONCEPTS.keys()),
+            "usage": "statdata_help(concept='YoY') — egy konkrét fogalmat kér.",
+        }, ensure_ascii=False, indent=2)
+
+    key = concept.strip().lower().replace("-", "_").replace(" ", "_")
+    # Variációk: 'YoY' → 'yoy', 'HICP vs CPI' → 'hicp_vs_cpi', etc.
+    if key not in _HELP_CONCEPTS:
+        # Try fuzzy match
+        candidates = [c for c in _HELP_CONCEPTS if key in c or c in key]
+        if len(candidates) == 1:
+            key = candidates[0]
+        else:
+            return json.dumps({
+                "error": f"Ismeretlen fogalom: {concept!r}",
+                "did_you_mean": candidates[:5] if candidates else None,
+                "available_concepts": sorted(_HELP_CONCEPTS.keys()),
+            }, ensure_ascii=False, indent=2)
+
+    entry = dict(_HELP_CONCEPTS[key])
+    entry["concept_key"] = key
+    return json.dumps(entry, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -7337,6 +7547,7 @@ _API_TOOL_DISPATCH = {
     "get_ecb_data": get_ecb_data,
     "get_flash_releases": get_flash_releases,
     "get_macro_indicator": get_macro_indicator,
+    "statdata_help": statdata_help,
 }
 
 
