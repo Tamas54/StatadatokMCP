@@ -5117,7 +5117,7 @@ INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
 ]
 INDICATOR_RESOLVERS[("EA", "food_cpi")] = [
     {"type": "eurostat_press", "suffix": "ap", "historical": True,
-                                "component_label": "Food",
+                                "component_label": "Food, alcohol",
                                 "rx": r"(?-i:\*\*Food[\s\S]{0,40}?\*\*)[\s\S]*?\*\*(-?\d+[,.]?\d*)e?\*\*"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.FOOD00.4.ANR"},
 ]
@@ -5782,49 +5782,52 @@ def _parse_eurostat_press_table(text: str, component_label: str) -> list[dict]:
     """Parse a 6-7 month time series from an Eurostat HICP flash press release.
 
     The markdown layout is a wide table:
-      Weights | Apr 25 | Nov 25 | Dec 25 | Jan 26 | Feb 26 | Mar 26 | Apr 26 | Apr 26-monthly
-      **All-items HICP** | 1000.0 | 2.2 | 2.1 | 2.0 | ... | **3.0e** | 0.6e
-      **Food** | ... | 2.5e | ...
-      **Energy** | 90.5 | -3.6 | ... | **10.9e** | 3.0e
-
-    We extract the headers (month-labels), then for the named component find
-    the row of values, and return [{period, value}, ...] for the annual-rate
-    columns only (skipping Weight and the monthly-rate column).
+      Weights (‰) | Apr 25 | Nov 25 | Dec 25 | Jan 26 | Feb 26 | Mar 26 | Apr 26 (annual) | Apr 26 (monthly)
+      **All-items HICP**          | 1000.0 | 2.2 | 2.1 | 2.0 | 1.7 | 1.9 | 2.6 | **3.0e** | 0.6e
+      **Food, alcohol & tobacco** | xxx.x  | ... | ... | ... | ... | ... | ... | **2.5e** | x.xe
+      **Energy**                  | 90.5   | -3.6 | -0.5 | -1.9 | -4.0 | -3.1 | 5.1 | **10.9e** | 3.0e
+      **Services**                | 466.9  | 1.1 | 4.0 | 3.5 | 3.4 | 3.2 | 3.4 | **3.0e** | 0.2e
     """
-    # Find month-header tokens: "Apr 25", "Nov 25", "Dec 25", ...
+    # Find month-header tokens. Headers appear as **Mon YY** in markdown.
     headers = re.findall(r"\*\*([A-Z][a-z]{2})\s+(\d{2})\*\*", text)
     if not headers:
         return []
 
-    # Convert month-abbrev to YYYY-MM
     month_idx = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
                  "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
-    periods: list[str] = []
+    raw_periods: list[str] = []
     for mon, yr in headers:
         m_num = month_idx.get(mon)
         if m_num:
-            periods.append(f"20{yr}-{m_num:02d}")
-
-    if not periods:
+            raw_periods.append(f"20{yr}-{m_num:02d}")
+    if not raw_periods:
         return []
 
-    # Find the component-row: after the **label** find values until next **label**
-    # The label MAY have additional words ("Food, alcohol & tobacco"), so use
-    # the leading part as anchor.
+    # The last month is often duplicated (annual rate + monthly rate columns).
+    # Dedup, keeping first occurrence; remember how many trailing dupes there
+    # were so we can split the value vector.
+    seen: dict[str, int] = {}
+    unique_periods: list[str] = []
+    for p in raw_periods:
+        if p not in seen:
+            unique_periods.append(p)
+            seen[p] = 1
+        else:
+            seen[p] += 1
+    extra_dupes = len(raw_periods) - len(unique_periods)
+
+    # Find the component-row body. Multiline-tolerant pattern: the label can
+    # span newlines ("Food,\nalcohol & tobacco").
     pattern = re.compile(
-        rf"(?-i:\*\*{re.escape(component_label)}\b[^*\n]*\*\*)([\s\S]*?)(?=\*\*[A-Z]|\Z)",
+        rf"(?-i:\*\*\s*{re.escape(component_label)}[^*]*?\*\*)([\s\S]*?)(?=\*\*[A-Z][a-z A-Za-z,&]*?\*\*|\Z)",
         flags=re.DOTALL,
     )
     m = pattern.search(text)
     if not m:
         return []
 
-    body = m.group(1)
-    # Tokens that are values: optional minus, digits, optional comma/dot, digits, optional 'e' marker
-    # Strip markdown escapes for minus: "\-3.6" → "-3.6"
-    body = body.replace("\\-", "-")
-    value_tokens = re.findall(r"\*{0,2}(-?\d+[.,]\d+)e?\*{0,2}", body)
-    # Convert to floats
+    body = m.group(1).replace("\\-", "-")  # markdown escape for minus
+    value_tokens = re.findall(r"(-?\d+[.,]\d+)", body)
     values: list[float] = []
     for v in value_tokens:
         try:
@@ -5832,28 +5835,22 @@ def _parse_eurostat_press_table(text: str, component_label: str) -> list[dict]:
         except ValueError:
             continue
 
-    # Layout: first value = Weight (skip), then 1-per-header annual rates, last 1
-    # is monthly rate (skip). Headers may contain a duplicate Apr 26 for monthly.
-    # Heuristic: if there are exactly len(periods) values, treat all as annuals
-    # in order. If len(periods)+1, the first one is Weight. If len(periods)+2,
-    # Weight + monthly.
-    n_h = len(periods)
-    if len(values) >= n_h + 2:
-        annuals = values[1:n_h + 1]
-    elif len(values) >= n_h + 1:
-        annuals = values[1:n_h + 1]
-    elif len(values) >= n_h:
-        annuals = values[:n_h]
+    n_unique = len(unique_periods)
+    # Expected layout: [Weight] + [N annual rates for unique_periods] + [M monthly rates for dupes]
+    if len(values) >= 1 + n_unique + extra_dupes:
+        # Weight present, then exactly N annuals, then M monthly rate(s)
+        annuals = values[1 : 1 + n_unique]
+    elif len(values) >= 1 + n_unique:
+        annuals = values[1 : 1 + n_unique]
+    elif len(values) >= n_unique:
+        # No weight (e.g. All-items HICP omits weight in some layouts)
+        annuals = values[:n_unique]
     else:
-        # Not enough values for the header schema
-        annuals = values[:n_h]
-        periods = periods[:len(annuals)]
+        # Partial — best-effort
+        annuals = values[:n_unique]
+        unique_periods = unique_periods[:len(annuals)]
 
-    # The first header is typically Y-1 (year-ago, e.g. Apr 25); the last
-    # is current. Sort by period; expose as time_series.
-    pairs = list(zip(periods, annuals))
-    # Filter out far-back outlier (year-ago): keep only if consecutive
-    # Actually, we keep everything — the agent can decide which is relevant.
+    pairs = list(zip(unique_periods, annuals))
     out = [{"period": p, "value": v} for p, v in pairs]
     out.sort(key=lambda r: r["period"])
     return out
