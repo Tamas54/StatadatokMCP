@@ -4845,9 +4845,11 @@ INDICATOR_RESOLVERS[("HU", "cpi")] = [
                               "rx": r"fogyasztói\s+árak[\s\S]{0,80}?átlagosan\s+(\d+[,.]\d)\s*%?[\s\-]*kal"},
     {"type": "ksh_flash",    "topic": "far",
                               "rx": r"(\d+[,.]\d)\s*%[\s\-]*kal\s+haladt[áa]k?\s+meg\s+az\s+egy\s+évvel"},
+    # Megj.: az Eurostat HICP flash press release CSAK euro-area aggregate-et
+    # ad. HU-ra (mint nem-EA tag) a kanonikus forrás a KSH gyorstájékoztató —
+    # azt scrape-eljük közvetlenül a fenti ksh_flash resolverekkel.
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.000000.4.ANR"},
     {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "HU"},
-    # Eurostat newsroom press release scrape (havonta a HICP flash)
     {"type": "brave_search", "query": "Eurostat HICP Hungary {YYYY-MM} annual inflation rate",
                               "site": "ec.europa.eu",
                               "rx": r"Hungary[\s\S]{0,300}?(\d+[,.]\d)\s*%"},
@@ -5025,10 +5027,16 @@ INDICATOR_RESOLVERS[("NL", "cpi")] = [
 
 # ─── Pass 4: Euro area aggregate (EA / U2) ─────────────────────────
 INDICATOR_RESOLVERS[("EA", "cpi")] = [
+    # Eurostat hivatalos flash press release (ap = EA aggregate). A regex
+    # célzottan az "up to / expected to be X.Y%" mintát fogja — NE az
+    # "up from N.M% in previous month" reference-pontot.
+    {"type": "eurostat_press", "suffix": "ap",
+                                "rx": r"annual\s+inflation[\s\S]{0,40}?(?:up\s+to|down\s+to|at|expected\s+to\s+be)\s+(\d+[,.]\d)\s*%"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.000000.4.ANR"},
     {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "EA"},
-    {"type": "brave_search", "query": "Eurostat euro area HICP flash {YYYY-MM} annual rate",
-                              "rx": r"(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "Eurostat euro area annual inflation flash {YYYY-MM}",
+                              "site": "ec.europa.eu",
+                              "rx": r"annual\s+inflation[\s\S]{0,80}?(\d+[,.]\d)\s*%"},
     {"type": "brave_search", "query": "euro area inflation {YYYY-MM} ECB",
                               "rx": r"(\d+[,.]\d)\s*%"},
 ]
@@ -5684,6 +5692,74 @@ async def _resolver_brave_search(spec: dict) -> Optional[dict]:
     return res
 
 
+async def _resolver_eurostat_press(spec: dict) -> Optional[dict]:
+    """Resolver: Eurostat newsroom press release scrape.
+
+    The Eurostat publishes monthly euro-indicator press releases with a stable
+    URL pattern:
+        https://ec.europa.eu/eurostat/web/products-euro-indicators/w/2-{DDMM}{YYYY}-{suffix}
+    where suffix is 'cp' for the final monthly press release (typically
+    published around the 17–19th of the following month) which contains a
+    per-country table including Hungary, or 'ap' for the flash (around the
+    30th, euro-area aggregate only).
+
+    spec keys:
+        suffix: "cp" (final, country-bottom-line) or "ap" (flash, EA only)
+        rx: regex with capture group 1 = numeric value
+        months_back: probe N months back (default 3)
+
+    The resolver iterates through candidate dates in the publication window
+    (15..25 of the publication month) and the previous month, finding the
+    first URL that returns a regex-matching value.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    suffix = spec.get("suffix", "cp")
+    rx = spec["rx"]
+    months_back = spec.get("months_back", 3)
+    now = _dt.now()
+
+    # Candidate publication dates. Reference-month logic differs by suffix:
+    #   - "ap" (flash): published at month-end, reference month = publication month
+    #     (e.g. 2-30042026-ap covers April 2026 EA inflation)
+    #   - "cp" (final): published ~17-19 of the next month, reference = prev month
+    #     (e.g. 2-17052026-cp covers April 2026 final)
+    cand: list[tuple[str, str]] = []  # (period-label, url)
+    for back in range(months_back + 1):
+        m_idx = now.month - back
+        y = now.year
+        while m_idx <= 0:
+            m_idx += 12
+            y -= 1
+        if suffix == "ap":
+            # Flash: same month
+            ref_y, ref_m = y, m_idx
+            day_range = range(30, 25, -1)  # 30, 29, 28, 27, 26
+        else:
+            # Final: previous month
+            ref_m = m_idx - 1
+            ref_y = y
+            if ref_m <= 0:
+                ref_m += 12
+                ref_y -= 1
+            day_range = range(20, 14, -1)  # 20, 19, 18, 17, 16, 15
+        ref_label = f"{ref_y}-{ref_m:02d}"
+        for day in day_range:
+            url = f"https://ec.europa.eu/eurostat/web/products-euro-indicators/w/2-{day:02d}{m_idx:02d}{y}-{suffix}"
+            cand.append((ref_label, url))
+
+    for ref_label, url in cand:
+        try:
+            result = await _scrape_extract_value(url, rx)
+        except Exception:
+            continue
+        if result and result.get("value") is not None:
+            result["period"] = ref_label
+            result["source"] = f"Eurostat press release ({suffix}) {ref_label}"
+            result["source_url"] = url
+            return result
+    return None
+
+
 async def _resolver_ksh_flash(spec: dict) -> Optional[dict]:
     """Resolver: direct KSH gyorstájékoztató scrape.
 
@@ -5827,6 +5903,7 @@ async def _resolver_bis(spec: dict) -> Optional[dict]:
 _RESOLVERS = {
     "ecb": _resolver_ecb,
     "eurostat": _resolver_eurostat,
+    "eurostat_press": _resolver_eurostat_press,
     "fred": _resolver_fred,
     "dbnomics": _resolver_dbnomics,
     "ksh_stadat": _resolver_ksh_stadat,
