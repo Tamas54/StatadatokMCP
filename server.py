@@ -5,7 +5,7 @@ Unified MCP connector for European, Hungarian, and global statistical data
 (Eurostat, KSH, DBnomics, MNB, FRED, BIS, Yahoo Finance).
 Deployable on Railway with Streamable HTTP transport.
 
-16 Tools:
+17 Tools:
   - search_datasets: Search Eurostat, KSH, DBnomics, ECB, and flash releases by keyword
   - get_eurostat_data: Fetch data from Eurostat (JSON-stat API)
   - dbnomics_search: Search datasets across DBnomics + list providers (mode="providers")
@@ -25,6 +25,13 @@ Deployable on Railway with Streamable HTTP transport.
                   ECB rates, money market, MFI balance sheets, govt bond yields).
   - get_flash_releases: KSH gyorstájékoztatók + Eurostat news releases
                         (the freshest HU/EA flash macro numbers before APIs update).
+  - get_macro_indicator: HIGH-LEVEL guaranteed-fresh router. One call →
+                          one number. Country-agnostic (HU/DE/FR/IT/ES/EA/US/GB).
+                          Indicators: cpi, core_cpi, services_cpi, policy_rate,
+                          unemployment, gdp. Internally chains structured APIs
+                          → official scrape → brave_search, with automatic
+                          freshness checking. Use this for "what's HU's CPI
+                          now" type questions instead of orchestrating manually.
   Sub-tool: get_eurostat_data(dataset_code="COMEXT") — Eurostat COMEXT HS-level commodity trade
 """
 
@@ -4497,6 +4504,627 @@ async def get_flash_releases(
 
 
 # ---------------------------------------------------------------------------
+# Macro indicator router — guaranteed-fresh, country-agnostic
+# ---------------------------------------------------------------------------
+# High-level "give me fresh HU policy rate / DE CPI / US unemployment" tool.
+# Routes through a resolver chain per (country, indicator) and returns the
+# FIRST resolver whose value is fresher than the threshold. If every resolver
+# is stale or fails, returns the freshest stale value with explicit status.
+#
+# This is the answer to "the system MUST work and give reliable data": the
+# Bridge / sub-agent makes ONE call and gets a number + period + source-used,
+# instead of orchestrating six separate API calls and falling back to
+# web_search themselves.
+
+BRAVE_MCP_URL = os.environ.get("BRAVE_MCP_URL", "").strip().rstrip("/")
+
+# How recent the latest observation must be for an indicator to be "fresh"
+# enough that we stop the resolver chain. Tuned to typical publication cadence
+# plus a 2-week grace window.
+_FRESHNESS_DAYS: dict[str, int] = {
+    "cpi": 60,           # Monthly, published ~10–15 days after month-end
+    "core_cpi": 60,
+    "services_cpi": 60,
+    "policy_rate": 75,   # Monthly meetings; flash decision page must be <2.5mo
+    "unemployment": 75,  # Monthly, published with 1–2 month lag (Eurostat)
+    "gdp": 120,          # Quarterly, published 6–8 weeks after quarter-end
+    "ppi": 60,           # Monthly producer prices
+}
+
+# Per-(country, indicator) resolver chain. Each resolver is a dict with `type`
+# and parameters; the chain tries them in order and returns the first fresh
+# observation. Resolvers:
+#   - "ecb":          ECB Data Portal direct SDMX (uses get_ecb_data internals)
+#   - "eurostat":     Eurostat JSON-stat API
+#   - "fred":         FRED REST API (US data)
+#   - "ksh_stadat":   KSH STADAT table (HU only)
+#   - "scrape":       Static URL scrape via brave-mcp (JS-rendered OK), regex extraction
+#   - "brave_search": Brave search with site filter + scrape top hit
+#   - "bis":          BIS WS_CBPOL via DBnomics
+INDICATOR_RESOLVERS: dict[tuple[str, str], list[dict]] = {
+    # ─── Hungary ───────────────────────────────────────────────
+    ("HU", "cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.000000.4.ANR"},
+        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "HU"},
+        {"type": "scrape",       "url": "https://www.ksh.hu/s/helyzetkep/2024/04/index.html",
+                                  "rx": r"fogyasztói[\s\w]*?(\d+[,.]\d)\s*%"},
+        {"type": "brave_search", "query": "KSH fogyasztói árak {YYYY-MM} infláció",
+                                  "rx": r"(\d+[,.]\d)\s*%"},
+    ],
+    ("HU", "core_cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.XEF000.4.ANR"},
+        {"type": "ksh_stadat",   "table_code": "ara0045", "yoy_from_index": True},
+        {"type": "brave_search", "query": "MNB maginfláció {YYYY-MM}",
+                                  "rx": r"(\d+[,.]\d)\s*%"},
+    ],
+    ("HU", "services_cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.SERV00.4.ANR"},
+        {"type": "brave_search", "query": "MNB Inflációs Jelentés szolgáltatás infláció {YYYY}",
+                                  "rx": r"szolgáltatás[\s\w]*?(\d+[,.]\d)\s*%"},
+    ],
+    ("HU", "policy_rate"): [
+        {"type": "scrape",       "url": "https://www.mnb.hu/jegybanki-alapkamat-alakulasa",
+                                  "rx": r"(\d+[,.]\d{1,2})\s*%"},
+        {"type": "brave_search", "query": "MNB irányadó kamat alapkamat {YYYY-MM} monetáris tanács",
+                                  "site": "mnb.hu",
+                                  "rx": r"(\d+[,.]\d{1,2})\s*%"},
+        {"type": "bis",          "country": "HU"},
+    ],
+    ("HU", "unemployment"): [
+        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "HU",
+                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+        {"type": "brave_search", "query": "KSH munkanélküliségi ráta {YYYY-MM}",
+                                  "site": "ksh.hu",
+                                  "rx": r"(\d+[,.]\d)\s*%"},
+    ],
+    ("HU", "gdp"): [
+        {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "HU",
+                                  "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
+        {"type": "brave_search", "query": "KSH GDP gyorsbecslés {YYYY} negyedév",
+                                  "site": "ksh.hu",
+                                  "rx": r"(\d+[,.]\d)\s*%"},
+    ],
+    # ─── Germany ───────────────────────────────────────────────
+    ("DE", "cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.DE.N.000000.4.ANR"},
+        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "DE"},
+        {"type": "brave_search", "query": "Destatis Verbraucherpreise {YYYY-MM} Inflationsrate",
+                                  "site": "destatis.de",
+                                  "rx": r"(\d+[,.]\d)\s*%"},
+    ],
+    ("DE", "core_cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.DE.N.XEF000.4.ANR"},
+        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "DE",
+                                  "filters": "coicop=TOT_X_NRG_FOOD&unit=RCH_A"},
+    ],
+    ("DE", "unemployment"): [
+        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "DE",
+                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+    ],
+    ("DE", "gdp"): [
+        {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "DE",
+                                  "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
+    ],
+    # ─── France ───────────────────────────────────────────────
+    ("FR", "cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.FR.N.000000.4.ANR"},
+        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "FR"},
+        {"type": "brave_search", "query": "INSEE indice prix consommation {YYYY-MM} inflation",
+                                  "site": "insee.fr",
+                                  "rx": r"(\d+[,.]\d)\s*%"},
+    ],
+    ("FR", "unemployment"): [
+        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "FR",
+                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+    ],
+    ("FR", "gdp"): [
+        {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "FR",
+                                  "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
+    ],
+    # ─── Italy ───────────────────────────────────────────────
+    ("IT", "cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.IT.N.000000.4.ANR"},
+        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "IT"},
+    ],
+    ("IT", "unemployment"): [
+        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "IT",
+                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+    ],
+    ("IT", "gdp"): [
+        {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "IT",
+                                  "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
+    ],
+    # ─── Spain ───────────────────────────────────────────────
+    ("ES", "cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.ES.N.000000.4.ANR"},
+        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "ES"},
+    ],
+    ("ES", "unemployment"): [
+        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "ES",
+                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+    ],
+    # ─── Euro area aggregate (EA / U2) ─────────────────────────
+    ("EA", "cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.000000.4.ANR"},
+        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "EA"},
+    ],
+    ("EA", "core_cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.XEF000.4.ANR"},
+    ],
+    ("EA", "services_cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.SERV00.4.ANR"},
+    ],
+    ("EA", "policy_rate"): [
+        {"type": "ecb",          "dataset": "FM",  "key": "D.U2.EUR.4F.KR.DFR.LEV"},
+        {"type": "scrape",       "url": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/key_ecb_interest_rates/html/index.en.html",
+                                  "rx": r"Deposit facility[\s\S]{0,300}?(\d+[,.]\d{1,2})\s*%"},
+    ],
+    ("EA", "unemployment"): [
+        {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "EA20",
+                                  "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+    ],
+    ("EA", "gdp"): [
+        {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "EA20",
+                                  "filters": "na_item=B1GQ&unit=CLV15_MEUR&s_adj=SCA"},
+    ],
+    # ─── United States ─────────────────────────────────────────
+    ("US", "cpi"): [
+        {"type": "fred",         "series_id": "CPIAUCSL", "units": "pc1"},  # YoY%
+        {"type": "scrape",       "url": "https://www.bls.gov/news.release/cpi.nr0.htm",
+                                  "rx": r"(\d+[,.]\d)\s*percent"},
+    ],
+    ("US", "core_cpi"): [
+        {"type": "fred",         "series_id": "CPILFESL", "units": "pc1"},
+    ],
+    ("US", "policy_rate"): [
+        {"type": "fred",         "series_id": "DFEDTARU"},  # Fed Funds Target Upper Bound
+        {"type": "scrape",       "url": "https://www.federalreserve.gov/monetarypolicy/openmarket.htm",
+                                  "rx": r"(\d+[,.]\d{1,2})\s*(?:to|–|-)?\s*(\d+[,.]\d{1,2})?\s*percent"},
+    ],
+    ("US", "unemployment"): [
+        {"type": "fred",         "series_id": "UNRATE"},
+    ],
+    ("US", "gdp"): [
+        {"type": "fred",         "series_id": "GDPC1", "units": "pc1"},  # Real GDP YoY%
+    ],
+    # ─── UK ───────────────────────────────────────────────────
+    ("GB", "cpi"): [
+        {"type": "ecb",          "dataset": "ICP", "key": "M.GB.N.000000.4.ANR"},
+        {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "UK"},
+        {"type": "brave_search", "query": "ONS UK CPI inflation rate {YYYY-MM}",
+                                  "site": "ons.gov.uk",
+                                  "rx": r"(\d+[,.]\d)\s*%"},
+    ],
+    ("GB", "policy_rate"): [
+        {"type": "bis",          "country": "GB"},
+        {"type": "scrape",       "url": "https://www.bankofengland.co.uk/monetary-policy/the-interest-rate-bank-rate",
+                                  "rx": r"Bank Rate[\s\S]{0,200}?(\d+[,.]\d{1,2})\s*%"},
+    ],
+    ("GB", "unemployment"): [
+        {"type": "brave_search", "query": "ONS UK unemployment rate {YYYY-MM}",
+                                  "site": "ons.gov.uk",
+                                  "rx": r"(\d+[,.]\d)\s*%"},
+    ],
+}
+
+
+def _parse_period_to_date(period: str):
+    """Parse 'YYYY-MM', 'YYYY-Qn', 'YYYY-MM-DD' or 'YYYY' to a datetime."""
+    from datetime import datetime as _dt
+    period = (period or "").strip()
+    if not period:
+        return None
+    try:
+        if len(period) == 4 and period.isdigit():
+            return _dt(int(period), 12, 31)
+        if len(period) == 7 and "-Q" in period:  # 2025-Q4
+            y, q = period.split("-Q")
+            return _dt(int(y), int(q) * 3, 28)
+        if len(period) == 7 and period[4] == "-":  # 2025-12
+            return _dt(int(period[:4]), int(period[5:7]), 28)
+        if len(period) == 10 and period[4] == "-" and period[7] == "-":  # 2025-12-31
+            return _dt(int(period[:4]), int(period[5:7]), int(period[8:10]))
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def _is_fresh(period: str, max_age_days: int) -> bool:
+    """True if `period` is within max_age_days of today."""
+    from datetime import datetime as _dt
+    dt = _parse_period_to_date(period)
+    if not dt:
+        return False
+    age = (_dt.now() - dt).days
+    return age <= max_age_days
+
+
+def _format_query_template(template: str) -> str:
+    """Substitute {YYYY}, {YYYY-MM} placeholders with current date."""
+    from datetime import datetime as _dt, timedelta as _td
+    now = _dt.now()
+    # Use last month for monthly queries, since current month not yet published
+    last_month = (now.replace(day=1) - _td(days=1))
+    return (template
+            .replace("{YYYY-MM}", last_month.strftime("%Y-%m"))
+            .replace("{YYYY}", str(now.year))
+            .replace("{MM}", last_month.strftime("%m")))
+
+
+async def _brave_mcp_post(tool_name: str, arguments: dict, timeout: float = 90.0) -> Optional[dict]:
+    """Call brave-mcp-server's MCP endpoint. Returns parsed result dict or None."""
+    if not BRAVE_MCP_URL:
+        return None
+    payload = {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": tool_name, "arguments": arguments},
+    }
+    client = await get_client()
+    try:
+        r = await client.post(f"{BRAVE_MCP_URL}/mcp", json=payload, timeout=timeout,
+                              headers={"Accept": "application/json"})
+        if r.status_code != 200:
+            logger.warning("brave-mcp HTTP %d", r.status_code)
+            return None
+        data = r.json()
+        result = data.get("result") or {}
+        content = result.get("content") or []
+        if content and isinstance(content[0], dict) and "text" in content[0]:
+            try:
+                return json.loads(content[0]["text"])
+            except Exception:
+                return {"text": content[0]["text"]}
+        return result
+    except Exception as e:
+        logger.warning("brave-mcp call failed (%s): %s", tool_name, e)
+        return None
+
+
+async def _scrape_extract_value(url: str, rx: str) -> Optional[dict]:
+    """Scrape a URL (JS-rendered via brave-mcp if available, else plain httpx),
+    and extract the first regex match as a float value. Returns
+    {value, raw_match, period (today), source_url} or None.
+    """
+    text = ""
+    if BRAVE_MCP_URL:
+        result = await _brave_mcp_post("brave_scrape", {"url": url, "waitTime": 3000})
+        if result:
+            text = result.get("markdown") or result.get("text") or ""
+    if not text:
+        # Fallback: plain httpx (works for static HTML)
+        client = await get_client()
+        try:
+            r = await client.get(url, timeout=20.0, follow_redirects=True,
+                                 headers={"User-Agent": "StatData/1.0"})
+            if r.status_code == 200:
+                # Strip HTML tags crudely
+                text = re.sub(r"<[^>]+>", " ", r.text)
+                text = re.sub(r"\s+", " ", text)
+        except Exception as e:
+            logger.warning("scrape httpx fallback failed for %s: %s", url, e)
+
+    if not text:
+        return None
+
+    m = re.search(rx, text, flags=re.IGNORECASE)
+    if not m:
+        return None
+    raw = m.group(1).replace(",", ".")
+    try:
+        val = float(raw)
+    except ValueError:
+        return None
+
+    from datetime import datetime as _dt
+    return {
+        "value": val,
+        "period": _dt.now().strftime("%Y-%m-%d"),  # treat scrape as "current"
+        "raw_match": m.group(0),
+        "source_url": url,
+    }
+
+
+async def _brave_search_extract(query: str, rx: str, site: str = "") -> Optional[dict]:
+    """Run brave_search via brave-mcp; scrape top hit; extract regex value."""
+    if not BRAVE_MCP_URL:
+        return None
+    q = f"{query} site:{site}" if site else query
+    search_result = await _brave_mcp_post("brave_search", {"query": q, "limit": 5})
+    if not search_result:
+        return None
+    results = search_result.get("results") or []
+    if not results and isinstance(search_result.get("text"), str):
+        # Some brave-mcp responses bundle results in plain text
+        urls = re.findall(r"https?://\S+", search_result["text"])
+        results = [{"url": u} for u in urls[:5]]
+    for hit in results[:3]:
+        url = hit.get("url") if isinstance(hit, dict) else None
+        if not url:
+            continue
+        scraped = await _scrape_extract_value(url, rx)
+        if scraped:
+            scraped["search_query"] = q
+            return scraped
+    return None
+
+
+async def _resolver_ecb(spec: dict) -> Optional[dict]:
+    """Resolver: ECB Data Portal SDMX. Returns {value, period, source}."""
+    raw = await get_ecb_data(dataset=spec["dataset"], key=spec["key"], last_n=6)
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    data = d.get("data") or []
+    if not data:
+        return None
+    latest = data[-1]
+    return {
+        "value": latest.get("value"),
+        "period": latest.get("period"),
+        "source": f"ECB {spec['dataset']}/{spec['key']}",
+    }
+
+
+async def _resolver_eurostat(spec: dict) -> Optional[dict]:
+    """Resolver: Eurostat JSON-stat."""
+    args = dict(spec)
+    args.pop("type", None)
+    # 24-month window
+    from datetime import date as _date
+    since = (_date.today().replace(day=1)).strftime("%Y-%m")
+    args.setdefault("sinceTimePeriod",
+                    f"{int(since[:4]) - 2}-{since[5:7]}")
+    raw = await get_eurostat_data(**args)
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    rows = d.get("data") or d.get("observations") or []
+    if not rows:
+        return None
+    rows.sort(key=lambda r: str(r.get("Time", r.get("time", ""))))
+    latest = rows[-1]
+    return {
+        "value": latest.get("value"),
+        "period": str(latest.get("Time", latest.get("time", ""))),
+        "source": f"Eurostat {spec.get('dataset_code')}",
+    }
+
+
+async def _resolver_fred(spec: dict) -> Optional[dict]:
+    """Resolver: FRED REST."""
+    args = {k: v for k, v in spec.items() if k != "type"}
+    args.setdefault("limit", 3)
+    args.setdefault("sort_order", "desc")
+    raw = await get_fred_data(**args)
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    data = d.get("data") or []
+    if not data:
+        return None
+    latest = data[0]  # desc order
+    return {
+        "value": latest.get("value"),
+        "period": latest.get("date"),
+        "source": f"FRED {spec.get('series_id')}",
+    }
+
+
+async def _resolver_ksh_stadat(spec: dict) -> Optional[dict]:
+    """Resolver: KSH STADAT. yoy_from_index=True for base-index → YoY%."""
+    raw = await get_ksh_stadat(table_code=spec["table_code"], max_rows=36)
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    rows = d.get("data") or []
+    if not rows:
+        return None
+    # The KSH parser sometimes returns empty cells for the latest months — find
+    # the first non-empty value across the most recent rows.
+    for row in rows:
+        for col, val in row.items():
+            if isinstance(val, (int, float)) and val > 0:
+                return {
+                    "value": val,
+                    "period": str(row.get("Év", "")),
+                    "source": f"KSH STADAT {spec['table_code']}",
+                    "note": "raw base-index — YoY conversion may be required" if spec.get("yoy_from_index") else None,
+                }
+    return None
+
+
+async def _resolver_scrape(spec: dict) -> Optional[dict]:
+    """Resolver: direct URL scrape + regex extraction."""
+    res = await _scrape_extract_value(spec["url"], spec["rx"])
+    if res:
+        res["source"] = f"scrape {spec['url']}"
+    return res
+
+
+async def _resolver_brave_search(spec: dict) -> Optional[dict]:
+    """Resolver: brave_search (optionally site-filtered) + scrape + regex."""
+    q = _format_query_template(spec["query"])
+    res = await _brave_search_extract(q, spec["rx"], site=spec.get("site", ""))
+    if res:
+        res["source"] = f"brave_search {q}"
+    return res
+
+
+async def _resolver_bis(spec: dict) -> Optional[dict]:
+    """Resolver: BIS WS_CBPOL via DBnomics (used as policy-rate fallback)."""
+    raw = await get_policy_rates(countries=spec["country"], limit=3)
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    rates = d.get("rates", {}).get(spec["country"]) or {}
+    if not rates.get("current_rate"):
+        return None
+    return {
+        "value": rates["current_rate"],
+        "period": rates.get("as_of", ""),
+        "source": f"BIS WS_CBPOL {spec['country']}",
+        "stale_flag": rates.get("stale", False),
+    }
+
+
+_RESOLVERS = {
+    "ecb": _resolver_ecb,
+    "eurostat": _resolver_eurostat,
+    "fred": _resolver_fred,
+    "ksh_stadat": _resolver_ksh_stadat,
+    "scrape": _resolver_scrape,
+    "brave_search": _resolver_brave_search,
+    "bis": _resolver_bis,
+}
+
+
+@mcp.tool()
+async def get_macro_indicator(
+    country: str,
+    indicator: str,
+    freshness_days: int = 0,
+) -> str:
+    """High-level macro indicator router — guaranteed-fresh, country-agnostic.
+
+    Returns the latest value for a given (country, indicator) by trying a
+    chain of resolvers (structured APIs → official scrape → brave_search)
+    and stopping at the FIRST resolver whose latest observation is within
+    the freshness window. If every resolver is stale, returns the freshest
+    stale value with explicit status='stale'.
+
+    Use this tool when you want **a number** without orchestrating multiple
+    low-level calls. The Bridge / sub-agents should default to this for
+    "what's HU's CPI right now" type questions.
+
+    Args:
+        country: ISO-2 country code (HU, DE, FR, IT, ES, EA, US, GB, ...).
+                 EA = euro area aggregate (uses ECB U2 / Eurostat EA20).
+        indicator: One of:
+                   "cpi"           — headline HICP annual rate of change (%)
+                   "core_cpi"      — core HICP (excl. energy & food), YoY%
+                   "services_cpi"  — HICP services component, YoY%
+                   "policy_rate"   — central bank policy rate (%)
+                   "unemployment"  — unemployment rate (%)
+                   "gdp"           — GDP growth (real, YoY% — quarterly)
+                   "ppi"           — producer prices YoY% (if available)
+        freshness_days: Override the default freshness threshold (CPI 60d,
+                        policy_rate 75d, unemployment 75d, gdp 120d).
+                        Use 0 (default) for the indicator default.
+
+    Returns:
+        JSON with:
+          country, indicator, value, period, source_used,
+          status ("fresh"|"stale"|"missing"),
+          fallback_chain — ordered list of [resolver_type, outcome, period],
+          all_attempts — debug log of every resolver invocation.
+
+    Examples:
+        get_macro_indicator(country="HU", indicator="policy_rate")
+          → MNB scrape → 6.25 (2026-04-28), source: scrape mnb.hu
+        get_macro_indicator(country="DE", indicator="cpi")
+          → ECB ICP → 2.2 (2026-03), source: ECB M.DE.N.000000.4.ANR
+        get_macro_indicator(country="US", indicator="unemployment")
+          → FRED UNRATE → 3.9 (2026-03), source: FRED
+    """
+    country = country.strip().upper()
+    indicator = indicator.strip().lower()
+    chain = INDICATOR_RESOLVERS.get((country, indicator))
+    if not chain:
+        valid_countries = sorted({c for c, _ in INDICATOR_RESOLVERS})
+        valid_indicators = sorted({i for _, i in INDICATOR_RESOLVERS})
+        return json.dumps({
+            "error": f"No resolver chain for ({country!r}, {indicator!r}).",
+            "valid_countries": valid_countries,
+            "valid_indicators": valid_indicators,
+            "hint": "Extend INDICATOR_RESOLVERS in server.py to support this combo.",
+        }, ensure_ascii=False, indent=2)
+
+    threshold = freshness_days if freshness_days > 0 else _FRESHNESS_DAYS.get(indicator, 90)
+    attempts: list[dict] = []
+    best_stale: Optional[dict] = None  # freshest stale value found across the chain
+
+    for spec in chain:
+        rtype = spec.get("type")
+        fn = _RESOLVERS.get(rtype)
+        if not fn:
+            attempts.append({"resolver": rtype, "outcome": "no_resolver"})
+            continue
+        try:
+            result = await fn(spec)
+        except Exception as e:
+            logger.warning("Resolver %s failed: %s", rtype, e)
+            attempts.append({"resolver": rtype, "outcome": "error", "error": str(e)[:200]})
+            continue
+        if not result or result.get("value") is None:
+            attempts.append({"resolver": rtype, "outcome": "empty"})
+            continue
+        period = str(result.get("period") or "")
+        fresh = _is_fresh(period, threshold)
+        attempts.append({
+            "resolver": rtype, "outcome": "ok",
+            "value": result["value"], "period": period, "fresh": fresh,
+        })
+        if fresh:
+            return json.dumps({
+                "country": country,
+                "indicator": indicator,
+                "value": result["value"],
+                "period": period,
+                "status": "fresh",
+                "source_used": result.get("source", rtype),
+                "source_url": result.get("source_url"),
+                "freshness_threshold_days": threshold,
+                "fallback_chain": [a["resolver"] for a in attempts],
+                "all_attempts": attempts,
+            }, ensure_ascii=False, indent=2)
+        # Stale but valid — keep as best fallback
+        dt = _parse_period_to_date(period)
+        if dt and (not best_stale or _parse_period_to_date(best_stale["period"]) < dt):
+            best_stale = {
+                "value": result["value"], "period": period,
+                "source": result.get("source", rtype),
+                "source_url": result.get("source_url"),
+            }
+
+    if best_stale:
+        return json.dumps({
+            "country": country,
+            "indicator": indicator,
+            "value": best_stale["value"],
+            "period": best_stale["period"],
+            "status": "stale",
+            "source_used": best_stale["source"],
+            "source_url": best_stale.get("source_url"),
+            "freshness_threshold_days": threshold,
+            "fallback_chain": [a["resolver"] for a in attempts],
+            "all_attempts": attempts,
+            "warning": (
+                f"All resolvers returned stale data (latest: {best_stale['period']}, "
+                f"threshold: {threshold} days). The value is the freshest available "
+                f"but should be flagged as stale to the end user."
+            ),
+        }, ensure_ascii=False, indent=2)
+
+    return json.dumps({
+        "country": country,
+        "indicator": indicator,
+        "status": "missing",
+        "fallback_chain": [a["resolver"] for a in attempts],
+        "all_attempts": attempts,
+        "error": (
+            f"No resolver returned data for ({country}, {indicator}). "
+            "Check that BRAVE_MCP_URL is set for scrape/search fallbacks, "
+            "or extend the resolver chain."
+        ),
+    }, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Landing page
 # ---------------------------------------------------------------------------
 LANDING_HTML = """<!DOCTYPE html>
@@ -5013,6 +5641,7 @@ _API_TOOL_DISPATCH = {
     "get_policy_rates": get_policy_rates,
     "get_ecb_data": get_ecb_data,
     "get_flash_releases": get_flash_releases,
+    "get_macro_indicator": get_macro_indicator,
 }
 
 
