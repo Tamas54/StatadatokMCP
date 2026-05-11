@@ -4277,6 +4277,24 @@ async def get_ecb_data(
 # tables update. We index both into a shared SQLite cache so search_datasets
 # and get_flash_releases can surface them.
 KSH_FLASH_RSS = "https://www.ksh.hu/rss/gyorstajekoztatok.xml"
+
+# KSH gyorstájékoztató topic-kódok a /gyorstajekoztatok/<topic>/<topic>YYMM.html
+# URL-mintára. Ezt a get_flash_releases tool indexeli az RSS feed helyett (az
+# RSS valójában általános KSH-hírfolyam, NEM a strukturált gyorstájékoztatók).
+KSH_FLASH_TOPICS: dict[str, str] = {
+    "far":  "Fogyasztói árak",
+    "ipi":  "Ipari termelés",
+    "mun":  "Munkaerőpiac",
+    "gdp":  "GDP gyorsbecslés",
+    "kik":  "Kiskereskedelem",
+    "tur":  "Turizmus",
+    "kkr":  "Külkereskedelem",
+    "ber":  "Bruttó kereset",
+    "fok":  "Foglalkoztatottság",
+    "lak":  "Lakossági fogyasztás",
+    "epi":  "Építőipar",
+    "nep":  "Népesség",
+}
 EUROSTAT_FLASH_ATOM = (
     "https://ec.europa.eu/eurostat/web/main/news/euro-indicators"
     "?p_p_id=estatsearchportlet_WAR_estatsearchportlet_INSTANCE_OaTpFrwlabNK"
@@ -4362,24 +4380,90 @@ def _parse_eurostat_atom(xml_bytes: bytes) -> list[dict]:
     return items
 
 
+async def _probe_ksh_flash_topics() -> list[dict]:
+    """Probe current+previous month for each KSH_FLASH_TOPICS topic, build
+    items list from the URLs that return 200. Replaces the unreliable RSS
+    feed (which is a general news feed, not the structured gyorstájékoztatók).
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    client = await get_client()
+    now = _dt.now()
+    items: list[dict] = []
+
+    async def _probe_one(topic: str, label: str, year: int, month: int):
+        yy = f"{year % 100:02d}"
+        mm = f"{month:02d}"
+        url = f"https://www.ksh.hu/gyorstajekoztatok/{topic}/{topic}{yy}{mm}.html"
+        try:
+            r = await client.head(url, timeout=8.0)
+            if r.status_code == 200:
+                return {
+                    "title": f"{label} {year}. {mm}.",
+                    "link": url,
+                    "pub_date": f"{year}-{mm}-01",
+                    "description": f"KSH gyorstájékoztató — {label} {year}-{mm}",
+                }
+        except Exception:
+            pass
+        return None
+
+    # Try current and previous 2 months for each topic
+    tasks = []
+    for topic, label in KSH_FLASH_TOPICS.items():
+        for back in range(0, 3):
+            m_idx = now.month - back
+            y = now.year
+            while m_idx <= 0:
+                m_idx += 12
+                y -= 1
+            tasks.append(_probe_one(topic, label, y, m_idx))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for r in results:
+        if isinstance(r, dict):
+            items.append(r)
+    return items
+
+
 async def _refresh_flash_source(source: str, force: bool = False) -> int:
-    """Fetch a single flash source (ksh|eurostat) and upsert into SQLite."""
+    """Fetch a single flash source (ksh|eurostat) and upsert into SQLite.
+
+    For 'ksh' source: uses direct gyorstájékoztató URL probing (the RSS feed
+    is a general news stream and doesn't include structured flash releases).
+    Falls back to RSS if URL probing yields zero items.
+    """
     now = time.time()
     if not force and (now - _flash_loaded_at.get(source, 0.0)) < FLASH_TTL:
         return 0
 
     _init_flash_db()
-    client = await get_client()
-    url = KSH_FLASH_RSS if source == "ksh" else EUROSTAT_FLASH_ATOM
-    parser = _parse_ksh_rss if source == "ksh" else _parse_eurostat_atom
-    try:
-        resp = await client.get(url, timeout=25.0)
-        resp.raise_for_status()
-    except Exception as e:
-        logger.warning("Flash feed fetch failed (%s): %s", source, e)
-        return 0
+    items: list[dict] = []
 
-    items = parser(resp.content)
+    if source == "ksh":
+        try:
+            items = await _probe_ksh_flash_topics()
+        except Exception as e:
+            logger.warning("KSH flash topic probe failed: %s", e)
+        if not items:
+            # Fallback: RSS (general news feed)
+            client = await get_client()
+            try:
+                resp = await client.get(KSH_FLASH_RSS, timeout=20.0)
+                resp.raise_for_status()
+                items = _parse_ksh_rss(resp.content)
+            except Exception as e:
+                logger.warning("KSH RSS fallback failed: %s", e)
+    else:
+        # Eurostat — Atom feed
+        client = await get_client()
+        try:
+            resp = await client.get(EUROSTAT_FLASH_ATOM, timeout=25.0)
+            resp.raise_for_status()
+            items = _parse_eurostat_atom(resp.content)
+        except Exception as e:
+            logger.warning("Eurostat flash fetch failed: %s", e)
+            return 0
+
     if not items:
         return 0
 
@@ -5814,6 +5898,14 @@ async def get_macro_indicator(
                 "freshness_threshold_days": threshold,
                 "fallback_chain": [a["resolver"] for a in attempts],
                 "all_attempts": attempts,
+                "agent_instruction": (
+                    f"Ez a TÉNYLEGES legfrissebb {country} {indicator} adat: "
+                    f"{result['value']} ({period}). A fallback_chain és all_attempts "
+                    f"AUDIT-TRAIL — a stale értékek (pl. korábbi ECB ICP, Eurostat) "
+                    f"NEM minősítendők 'hiányzó forrásnak' vagy 'nem elérhető adatnak'. "
+                    f"A {indicator} ITT VAN, FRISSEN. Idézd ezt az értéket és a "
+                    f"source_used-et a brief-ben — ne flag-eld hiányzónak."
+                ),
             }
             if result.get("decision_date"):
                 out_payload["decision_date"] = result["decision_date"]
