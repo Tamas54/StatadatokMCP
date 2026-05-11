@@ -1209,7 +1209,15 @@ async def dbnomics_series(
     Args:
         provider_code: Provider code (e.g. "IMF", "ECB", "OECD", "WB", "Eurostat", "AMECO")
         dataset_code: Dataset code (e.g. "WEO:latest", "EXR", "ZUTN", "nama_10_gdp")
-        series_code: Specific series code (e.g. "A.HU.NGDP_RPCH" for IMF WEO). Optional.
+        series_code: Specific series code. Format depends on provider:
+                     - IMF WEO: 3-letter ISO country + concept, NO frequency prefix.
+                       Examples: "HUN.NGDP_RPCH" (HU real GDP growth %),
+                                 "DEU.NGDP_RPCH" (DE real GDP growth %),
+                                 "USA.PCPIPCH" (US CPI % change).
+                     - IMF IFS: A.{2-letter}.{indicator}, e.g. "A.HU.FPOLM_PA".
+                     - ECB ICP: "M.HU.N.000000.4.ANR" — but prefer get_ecb_data tool.
+                     - OECD: per-dataset, see provider docs. Optional — leave empty to
+                     list series in dataset.
         dimensions: Dimension filter as JSON string (e.g. '{"geo":["HU","DE"],"freq":["A"]}')
         query: Text search within the dataset (e.g. "Hungary GDP")
         limit: Max series to return (default: 50, max: 200)
@@ -2992,15 +3000,25 @@ async def get_fred_data(
 
     client = await get_client()
 
-    # Fetch series info + observations in parallel
+    # Fetch series info + observations in parallel. Retry once on transient
+    # 5xx errors — FRED occasionally returns HTTP 500 under load.
+    async def _fetch_with_retry(url, params, retries=2):
+        last_resp = None
+        for attempt in range(retries):
+            r = await client.get(url, params=params)
+            if r.status_code < 500:
+                return r
+            last_resp = r
+            await asyncio.sleep(0.7 * (attempt + 1))
+        return last_resp
     try:
         info_resp, obs_resp = await asyncio.gather(
-            client.get(f"{_FRED_BASE}/series", params={
+            _fetch_with_retry(f"{_FRED_BASE}/series", {
                 "series_id": series_id,
                 "api_key": _FRED_API_KEY,
                 "file_type": "json",
             }),
-            client.get(f"{_FRED_BASE}/series/observations", params=params),
+            _fetch_with_retry(f"{_FRED_BASE}/series/observations", params),
         )
 
         # Parse series metadata. Always include id so sub-agents see which
