@@ -4525,10 +4525,18 @@ _FRESHNESS_DAYS: dict[str, int] = {
     "cpi": 60,           # Monthly, published ~10–15 days after month-end
     "core_cpi": 60,
     "services_cpi": 60,
+    "energy_cpi": 60,
+    "food_cpi": 60,
     "policy_rate": 75,   # Monthly meetings; flash decision page must be <2.5mo
     "unemployment": 75,  # Monthly, published with 1–2 month lag (Eurostat)
-    "gdp": 120,          # Quarterly, published 6–8 weeks after quarter-end
+    "gdp": 150,          # Quarterly, published 6–8 weeks after quarter-end
     "ppi": 60,           # Monthly producer prices
+    "wages": 90,         # Monthly with longer lag (Eurostat quarterly)
+    "retail_trade": 75,
+    "industrial_production": 75,
+    "trade_balance": 90,
+    "gov_debt": 180,     # Quarterly, often a quarter lag
+    "house_prices": 180,
 }
 
 # Per-(country, indicator) resolver chain. Each resolver is a dict with `type`
@@ -4610,12 +4618,16 @@ def _eu_country_resolvers(c: str) -> dict[str, list[dict]]:
              "rx": r"(\d+[,.]\d)\s*%"},
         ],
         "retail_trade": [
-            {"type": "eurostat", "dataset_code": "sts_trtu_m", "geo": c,
-             "filters": "indic_bt=TOVV&nace_r2=G47&s_adj=SCA&unit=RCH_A"},
+            {"type": "eurostat", "dataset_code": "sts_trtu_m", "geo": c},
+            {"type": "brave_search",
+             "query": f"retail trade volume {c} {{YYYY-MM}} Eurostat",
+             "rx": r"(-?\d+[,.]\d)\s*%"},
         ],
         "industrial_production": [
-            {"type": "eurostat", "dataset_code": "sts_inpr_m", "geo": c,
-             "filters": "indic_bt=PROD&nace_r2=B-D&s_adj=SCA&unit=RCH_A"},
+            {"type": "eurostat", "dataset_code": "sts_inpr_m", "geo": c},
+            {"type": "brave_search",
+             "query": f"industrial production {c} {{YYYY-MM}} Eurostat",
+             "rx": r"(-?\d+[,.]\d)\s*%"},
         ],
         "trade_balance": [
             {"type": "eurostat", "dataset_code": "ext_lt_intertrd", "geo": c},
@@ -4765,6 +4777,16 @@ INDICATOR_RESOLVERS[("ES", "cpi")] = [
                               "rx": r"(\d+[,.]\d)\s*%"},
 ]
 
+# Netherlands — CBS native query
+INDICATOR_RESOLVERS[("NL", "cpi")] = [
+    {"type": "ecb",          "dataset": "ICP", "key": "M.NL.N.000000.4.ANR"},
+    {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "NL"},
+    {"type": "brave_search", "query": "CBS Netherlands inflation HICP {YYYY-MM}",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "Netherlands inflation rate {YYYY-MM} annual",
+                              "rx": r"(\d+[,.]\d)\s*%"},
+]
+
 # ─── Pass 4: Euro area aggregate (EA / U2) ─────────────────────────
 INDICATOR_RESOLVERS[("EA", "cpi")] = [
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.000000.4.ANR"},
@@ -4808,12 +4830,14 @@ INDICATOR_RESOLVERS[("EA", "ppi")] = [
                               "filters": "indic_bt=PRC_PRR&nace_r2=B-E36&s_adj=NSA&unit=RCH_A"},
 ]
 INDICATOR_RESOLVERS[("EA", "retail_trade")] = [
-    {"type": "eurostat",     "dataset_code": "sts_trtu_m", "geo": "EA20",
-                              "filters": "indic_bt=TOVV&nace_r2=G47&s_adj=SCA&unit=RCH_A"},
+    {"type": "eurostat",     "dataset_code": "sts_trtu_m", "geo": "EA20"},
+    {"type": "brave_search", "query": "euro area retail trade volume {YYYY-MM} Eurostat",
+                              "rx": r"(-?\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("EA", "industrial_production")] = [
-    {"type": "eurostat",     "dataset_code": "sts_inpr_m", "geo": "EA20",
-                              "filters": "indic_bt=PROD&nace_r2=B-D&s_adj=SCA&unit=RCH_A"},
+    {"type": "eurostat",     "dataset_code": "sts_inpr_m", "geo": "EA20"},
+    {"type": "brave_search", "query": "euro area industrial production {YYYY-MM} Eurostat",
+                              "rx": r"(-?\d+[,.]\d)\s*%"},
 ]
 
 # ─── Pass 5: United States (FRED dominant) ─────────────────────────
@@ -4859,7 +4883,10 @@ INDICATOR_RESOLVERS[("US", "industrial_production")] = [
     {"type": "fred",         "series_id": "INDPRO", "units": "pc1"},
 ]
 INDICATOR_RESOLVERS[("US", "wages")] = [
-    {"type": "fred",         "series_id": "CES0500000003", "units": "pc1"},  # Average hourly earnings YoY%
+    {"type": "fred",         "series_id": "CES0500000003"},  # Average hourly earnings, USD (level — we report level, agent computes YoY)
+    {"type": "fred",         "series_id": "ECIWAG", "units": "pc1"},  # Employment Cost Index YoY%
+    {"type": "brave_search", "query": "BLS US average hourly earnings wages {YYYY-MM} year-over-year",
+                              "rx": r"(\d+[,.]\d)\s*(?:%|percent)"},
 ]
 INDICATOR_RESOLVERS[("US", "house_prices")] = [
     {"type": "fred",         "series_id": "CSUSHPISA", "units": "pc1"},  # Case-Shiller national YoY%
