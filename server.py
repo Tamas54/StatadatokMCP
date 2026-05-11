@@ -2238,14 +2238,15 @@ def calculate(expression: str) -> str:
         """Percentage change from old to new."""
         return round((new / old - 1) * 100, 2)
 
-    # Safe evaluation context
+    # Safe evaluation context — uppercase aliases so models that emit CAGR /
+    # CUM_INFLATION / REAL_VALUE etc. don't trip on case-sensitivity.
     safe_ns = {
         "__builtins__": {},
-        "cum_inflation": cum_inflation,
-        "real_value": real_value,
-        "cagr": cagr,
-        "convert": convert,
-        "pct_change": pct_change,
+        "cum_inflation": cum_inflation, "CUM_INFLATION": cum_inflation,
+        "real_value":   real_value,    "REAL_VALUE":   real_value,
+        "cagr":         cagr,          "CAGR":         cagr,
+        "convert":      convert,       "CONVERT":      convert,
+        "pct_change":   pct_change,    "PCT_CHANGE":   pct_change,
         "round": round,
         "abs": abs,
         "min": min,
@@ -3364,6 +3365,8 @@ async def forecast(
                  Global (US,GB,JP,CN,CA,AU,KR,IN,BR,MX,TR,ZA)
         indicator: "gdp" (growth %), "inflation" (CPI %), "unemployment" (rate %),
                    or "oecd_cli" (OECD Composite Leading Indicator, 100=neutral).
+                   Aliases accepted: "gdp_growth" → "gdp", "cpi" → "inflation",
+                   "core_cpi" → "inflation", "services_cpi" → "inflation".
         year: Target year for forecast (default: 2026). Ignored for oecd_cli.
         quarter: Quarter 1-4 for quarterly forecast, 0 for annual (default: 0).
                  Quarterly forecasts are our EXCLUSIVE capability — most sources only have annual!
@@ -3387,6 +3390,16 @@ async def forecast(
         CLI < 100 + trending up -> contraction bottoming, recovery coming
     """
     indicator = indicator.lower().strip()
+    # Indicator-name aliasing — keeps forecast compatible with get_macro_indicator's
+    # broader taxonomy (gdp_growth, cpi, core_cpi, ...) without losing functionality.
+    _ind_aliases = {
+        "gdp_growth": "gdp",
+        "cpi": "inflation",
+        "core_cpi": "inflation",
+        "services_cpi": "inflation",
+        "headline_cpi": "inflation",
+    }
+    indicator = _ind_aliases.get(indicator, indicator)
 
     # --- OECD CLI MODE ---
     if indicator == "oecd_cli":
