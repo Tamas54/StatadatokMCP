@@ -4724,10 +4724,10 @@ for _c, _scrape_list in _POLICY_RATE_SCRAPE_URLS.items():
 
 # Hungary — Magyar nyelvű brave queryk és KSH-stadat fallback
 INDICATOR_RESOLVERS[("HU", "cpi")] = [
-    # ELSŐ: KSH gyorstájékoztató — célzott YoY-mondat
-    # "...fogyasztói árak átlagosan 2,1 %-kal haladták meg az egy évvel korábbi értékeket"
+    # ELSŐ: KSH gyorstájékoztató — célzott YoY-mondat (markdown + HTML kompatibilis)
+    # "...fogyasztói árak átlagosan 2,1%-kal haladták meg az egy évvel korábbi"
     {"type": "ksh_flash",    "topic": "far",
-                              "rx": r"fogyasztói\s+árak[\s\S]{0,80}?átlagosan\s+(\d+[,.]\d)\s*%"},
+                              "rx": r"fogyasztói\s+árak[\s\S]{0,80}?átlagosan\s+(\d+[,.]\d)\s*%?[\s\-]*kal"},
     {"type": "ksh_flash",    "topic": "far",
                               "rx": r"(\d+[,.]\d)\s*%[\s\-]*kal\s+haladt[áa]k?\s+meg\s+az\s+egy\s+évvel"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.000000.4.ANR"},
@@ -4748,29 +4748,31 @@ INDICATOR_RESOLVERS[("HU", "core_cpi")] = [
                               "site": "mnb.hu",
                               "rx": r"maginfláció[\s\S]{0,200}?(\d+[,.]\d)\s*%"},
 ]
-# Food and energy CPI from KSH flash as well — célzott YoY-mintával
+# Food and energy CPI from KSH flash as well — markdown + HTML kompatibilis
 INDICATOR_RESOLVERS[("HU", "food_cpi")] = [
+    # markdown: "Az **élelmiszerek** ára 1,5%-kal nőtt"
+    # HTML:     "Az élelmiszerek ára 1,5 %- kal nőtt"
     {"type": "ksh_flash",    "topic": "far",
-                              "rx": r"élelmiszerek?\s+ára\s+(\d+[,.]\d)\s*%[\s\-]*kal\s+(?:nőtt|emelkedett|drágult|csökkent)"},
+                              "rx": r"\*{0,2}élelmiszerek?\*{0,2}\s+ára\s+(\d+[,.]\d)\s*%[\s\-]*kal\s+(?:nőtt|emelkedett|drágult|csökkent)"},
     {"type": "ksh_flash",    "topic": "far",
-                              "rx": r"Élelmiszerek?\s+(\d+[,.]\d)\s*%"},
+                              "rx": r"élelmiszerek?\*{0,2}\s+ára\s+(\d+[,.]\d)\s*%"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.FOOD00.4.ANR"},
 ]
 INDICATOR_RESOLVERS[("HU", "energy_cpi")] = [
-    # KSH "A háztartási energiáért 0,4, ezen belül ... %-kal kevesebbet/többet
-    # fizettek" — the number comes right after "energiáért", but the directional
-    # verb is at the end of the enumeration. sign-aware with 100-char suffix.
+    # markdown: "A **háztartási energiáért** 0,4, ezen belül a vezetékes gázért 3,1%-kal kevesebbet fizettek"
+    # The number is right after "energiáért", verb (kevesebbet/többet) ~70ch later.
     {"type": "ksh_flash",    "topic": "far", "sign_aware": True,
-                              "rx": r"háztartási\s+energi[áa](?:ért)?\s+(\d+[,.]\d)"},
+                              "rx": r"\*{0,2}háztartási\s+energi[áa](?:ért)?\*{0,2}\s+(\d+[,.]\d)"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.NRGY00.4.ANR"},
 ]
 INDICATOR_RESOLVERS[("HU", "services_cpi")] = [
-    # ELSŐ: KSH gyorstájékoztató YoY-mondat
-    # "A szolgáltatások 4,0 %-kal drágultak" — egyértelmű YoY-minta
+    # ELSŐ: KSH gyorstájékoztató YoY-mondat (markdown + HTML kompatibilis)
+    # markdown: "A **szolgáltatások** 4,0%-kal drágultak"
+    # HTML:     "A szolgáltatások 4,0 %- kal drágultak"
     {"type": "ksh_flash",    "topic": "far",
-                              "rx": r"A\s*(?:&nbsp;\s*)?szolgáltatások\s+(\d+[,.]\d)\s*%[\s\-]*kal\s+drágult"},
+                              "rx": r"A\s+\*{0,2}\s*(?:&nbsp;\s*)?szolgáltatások\*{0,2}\s+(\d+[,.]\d)\s*%[\s\-]*kal\s+drágult"},
     {"type": "ksh_flash",    "topic": "far",
-                              "rx": r"szolgáltatások\s+(\d+[,.]\d)\s*%[\s\-]*kal\s+(?:drágult|csökkent|nőtt)"},
+                              "rx": r"szolgáltatások\*{0,2}\s+(\d+[,.]\d)\s*%[\s\-]*kal\s+(?:drágult|csökkent|nőtt|emelkedt)"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.SERV00.4.ANR"},
     {"type": "brave_search", "query": "szolgáltatás infláció {YYYY-MM} havi",
                               "site": "mnb.hu",
