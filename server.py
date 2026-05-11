@@ -5081,19 +5081,45 @@ INDICATOR_RESOLVERS[("EA", "cpi")] = [
                               "rx": r"(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("EA", "core_cpi")] = [
+    # A flash press release tipikusan NEM tartalmaz "core HICP" külön sort,
+    # csak a 4 fő komponenst (services, energy, food, non-energy goods).
+    # ECB ICP XEF000 stale 2025-12-nél. Maradék: brave_search szigorú minta.
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.XEF000.4.ANR"},
-    {"type": "brave_search", "query": "Eurostat euro area core HICP {YYYY-MM} excluding energy food",
-                              "rx": r"(\d+[,.]\d)\s*%"},
+    {"type": "brave_search", "query": "Eurostat euro area HICP excluding energy food {YYYY-MM}",
+                              "site": "ec.europa.eu",
+                              "rx": r"excluding\s+energy\s+(?:and\s+)?(?:un[\s\-]?processed\s+)?food[\s\S]{0,80}?(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
+    {"type": "eurostat_press", "suffix": "ap",
+                                "rx": r"[Ss]ervices[\s\S]{0,30}?(\d+[,.]\d)\s*%"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.SERV00.4.ANR"},
     {"type": "brave_search", "query": "euro area services inflation HICP {YYYY-MM}",
-                              "rx": r"(\d+[,.]\d)\s*%"},
+                              "site": "ec.europa.eu",
+                              "rx": r"[Ss]ervices[\s\S]{0,30}?(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("EA", "energy_cpi")] = [
+    # A press release a 4 komponenst lazán listázza ("Energy: 10.9%" vagy
+    # "**Energy** 10.9%"). Specifikus szóhatáros minta + nem-greedy.
+    {"type": "eurostat_press", "suffix": "ap",
+                                "rx": r"(?:^|\s|\*)Energy\*{0,2}[\s:]{0,5}(-?\d+[,.]\d)\s*%"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.NRGY00.4.ANR"},
 ]
+INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
+    {"type": "eurostat_press", "suffix": "ap",
+                                "rx": r"(?:^|\s|\*)[Ss]ervices\*{0,2}[\s:]{0,5}(-?\d+[,.]\d)\s*%"},
+    {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.SERV00.4.ANR"},
+    {"type": "brave_search", "query": "euro area services inflation HICP {YYYY-MM}",
+                              "site": "ec.europa.eu",
+                              "rx": r"[Ss]ervices[\s\S]{0,30}?(\d+[,.]\d)\s*%"},
+]
 INDICATOR_RESOLVERS[("EA", "food_cpi")] = [
+    {"type": "eurostat_press", "suffix": "ap",
+                                "rx": r"Food[\s\S]{0,40}?[\s:](-?\d+[,.]\d)\s*%"},
+    {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.FOOD00.4.ANR"},
+]
+INDICATOR_RESOLVERS[("EA", "food_cpi")] = [
+    {"type": "eurostat_press", "suffix": "ap",
+                                "rx": r"Food[\s\S]{0,60}?(\d+[,.]\d)\s*%"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.FOOD00.4.ANR"},
 ]
 INDICATOR_RESOLVERS[("EA", "policy_rate")] = [
@@ -5102,8 +5128,16 @@ INDICATOR_RESOLVERS[("EA", "policy_rate")] = [
                               "rx": r"Deposit facility[\s\S]{0,300}?(\d+[,.]\d{1,2})\s*%"},
 ]
 INDICATOR_RESOLVERS[("EA", "unemployment")] = [
+    # 2026-01-óta Bulgaria belépett az EA-ba → EA21. A geo=EA20 a 2025-12-ig tartó
+    # adatokat adja vissza. Próbáljuk EA21-et először, EA20 fallback.
+    {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "EA21",
+                              "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
     {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "EA20",
                               "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+    {"type": "eurostat",     "dataset_code": "une_rt_m", "geo": "EA19",
+                              "filters": "sex=T&age=TOTAL&unit=PC_ACT&s_adj=SA"},
+    {"type": "eurostat_press", "suffix": "ap",
+                                "rx": r"(?:Euro area|euro area)[\s\S]{0,200}?unemployment rate[\s\S]{0,80}?(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("EA", "gdp")] = [
     {"type": "eurostat",     "dataset_code": "namq_10_gdp", "geo": "EA20",
@@ -5796,6 +5830,18 @@ async def _resolver_eurostat_press(spec: dict) -> Optional[dict]:
             result["period"] = ref_label
             result["source"] = f"Eurostat press release ({suffix}) {ref_label}"
             result["source_url"] = url
+            # Extract publication date from URL: 2-{DDMM}{YYYY}-{suffix}
+            url_tail = url.rsplit("/", 1)[1]
+            try:
+                # 2-30042026-ap → 30042026 → 2026-04-30
+                date_part = url_tail.split("-")[1]
+                if len(date_part) == 8:
+                    d, m, y = date_part[:2], date_part[2:4], date_part[4:]
+                    result["release_date"] = f"{y}-{m}-{d}"
+            except (IndexError, ValueError):
+                pass
+            result["is_flash"] = (suffix == "ap")
+            result["release_type"] = "flash_estimate" if suffix == "ap" else "final"
             return result
     return None
 
@@ -6114,8 +6160,10 @@ async def get_macro_indicator(
                     f"source_used-et a brief-ben — ne flag-eld hiányzónak."
                 ),
             }
-            if result.get("decision_date"):
-                out_payload["decision_date"] = result["decision_date"]
+            # Optional context fields propagated from resolver
+            for key in ("decision_date", "is_flash", "release_date", "release_type"):
+                if result.get(key) is not None:
+                    out_payload[key] = result[key]
             return json.dumps(out_payload, ensure_ascii=False, indent=2)
         # Stale but valid — keep as best fallback
         dt = _parse_period_to_date(period)
