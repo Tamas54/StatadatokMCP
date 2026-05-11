@@ -5098,15 +5098,15 @@ INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
                               "rx": r"[Ss]ervices[\s\S]{0,30}?(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("EA", "energy_cpi")] = [
-    # A press release a 4 komponenst lazán listázza ("Energy: 10.9%" vagy
-    # "**Energy** 10.9%"). Specifikus szóhatáros minta + nem-greedy.
+    # A press release markdown-ja TÁBLÁZAT: "**Energy**\n<12 havi érték>\n**10.9e**".
+    # Case-sensitive (?-i:) — a kisbetűs "energy" másik táblázatban szerepel.
     {"type": "eurostat_press", "suffix": "ap",
-                                "rx": r"(?:^|\s|\*)Energy\*{0,2}[\s:]{0,5}(-?\d+[,.]\d)\s*%"},
+                                "rx": r"(?-i:\*\*Energy\*\*)[\s\S]*?\*\*(-?\d+[,.]?\d*)e?\*\*"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.NRGY00.4.ANR"},
 ]
 INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
     {"type": "eurostat_press", "suffix": "ap",
-                                "rx": r"(?:^|\s|\*)[Ss]ervices\*{0,2}[\s:]{0,5}(-?\d+[,.]\d)\s*%"},
+                                "rx": r"(?-i:\*\*Services\*\*)[\s\S]*?\*\*(-?\d+[,.]?\d*)e?\*\*"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.SERV00.4.ANR"},
     {"type": "brave_search", "query": "euro area services inflation HICP {YYYY-MM}",
                               "site": "ec.europa.eu",
@@ -5114,7 +5114,7 @@ INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
 ]
 INDICATOR_RESOLVERS[("EA", "food_cpi")] = [
     {"type": "eurostat_press", "suffix": "ap",
-                                "rx": r"Food[\s\S]{0,40}?[\s:](-?\d+[,.]\d)\s*%"},
+                                "rx": r"(?-i:\*\*Food[\s\S]{0,40}?\*\*)[\s\S]*?\*\*(-?\d+[,.]?\d*)e?\*\*"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.FOOD00.4.ANR"},
 ]
 INDICATOR_RESOLVERS[("EA", "food_cpi")] = [
