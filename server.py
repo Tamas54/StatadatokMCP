@@ -88,6 +88,52 @@ mcp = FastMCP(
 _client: Optional[httpx.AsyncClient] = None
 
 
+class _RateGate:
+    """Szolgaltatonkenti ONKORLATOZAS — hogy ne MI valtsuk ki a fojtast.
+
+    MIERT (Kommandant, 2026-08-30: "okos legyen az mcp-nk, a rate limitrol
+    tudjon"): a felismeres meg nem okossag. Ma este a sajat parhuzamos
+    auditjaim + negy ugynok kimeritettek a FRED limitjet; a szolgaltato
+    eloszor 429-et, majd 403-at adott, es a resolver-lanc `missing`-et
+    jelentett — mintha az adat nem letezne. Harom kulon dolog kell:
+      (a) NE lepjuk tul a limitet  → ez az osztaly (parhuzamossag + min. res),
+      (b) ha megis, VARJUNK es probaljuk ujra → `_fetch_with_retry`,
+      (c) ha az sem megy, MONDJUK KI, hogy fojtottak, ne azt, hogy nincs adat.
+
+    A FRED hivatalos korlata 120 keres/perc. A 0.12 s-os minimum res ~500/perc
+    elmeleti plafont ad, a 4-es parhuzamossag pedig a burst-ot fogja vissza —
+    egyutt boven a limit alatt maradunk, de nem lassitjuk feleslegesen.
+    """
+
+    def __init__(self, nev: str, parhuzamos: int = 4, min_res: float = 0.0):
+        self.nev = nev
+        self._sem = asyncio.Semaphore(parhuzamos)
+        self._min_res = min_res
+        self._lock = asyncio.Lock()
+        self._utolso = 0.0
+
+    async def __aenter__(self):
+        await self._sem.acquire()
+        if self._min_res:
+            async with self._lock:
+                import time as _t
+                var = self._min_res - (_t.monotonic() - self._utolso)
+                if var > 0:
+                    await asyncio.sleep(var)
+                self._utolso = _t.monotonic()
+        return self
+
+    async def __aexit__(self, *exc):
+        self._sem.release()
+        return False
+
+
+#: FRED: 120 keres/perc a hivatalos korlat.
+_FRED_GATE = _RateGate("fred", parhuzamos=4, min_res=0.12)
+#: Eurostat/dbnomics: nincs publikalt korlat, de a burst ott is 502-t szul.
+_EUROSTAT_GATE = _RateGate("eurostat", parhuzamos=6, min_res=0.05)
+
+
 async def get_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
@@ -3512,14 +3558,22 @@ async def get_fred_data(
 
     # Fetch series info + observations in parallel. Retry once on transient
     # 5xx errors — FRED occasionally returns HTTP 500 under load.
-    async def _fetch_with_retry(url, params, retries=2):
+    async def _fetch_with_retry(url, params, retries=4):
+        # ⚠️ A FOJTAS IS UJRAPROBALANDO. A korabbi valtozat csak 5xx-re vart,
+        # a 429/403 azonnal atesett — pedig az a KET kod jelenti azt, hogy
+        # "most ne, kesobb igen". Merve ma: parhuzamos terheles alatt a FRED
+        # eloszor 429-et, majd 403-at ad, es percek alatt magatol feloldodik.
         last_resp = None
         for attempt in range(retries):
-            r = await client.get(url, params=params)
-            if r.status_code < 500:
+            async with _FRED_GATE:
+                r = await client.get(url, params=params)
+            if r.status_code < 500 and r.status_code not in (403, 429):
                 return r
             last_resp = r
-            await asyncio.sleep(0.7 * (attempt + 1))
+            # Fojtasnal HOSSZABB varakozas (a szolgaltato ablakot szamol),
+            # szerverhibanal rovid.
+            _alap = 2.5 if r.status_code in (403, 429) else 0.7
+            await asyncio.sleep(_alap * (attempt + 1))
         return last_resp
     try:
         info_resp, obs_resp = await asyncio.gather(
@@ -7757,6 +7811,34 @@ async def get_macro_indicator(
                 f"All resolvers returned stale data (latest: {best_stale['period']}, "
                 f"threshold: {threshold} days). The value is the freshest available "
                 f"but should be flagged as stale to the end user."
+            ),
+        }, ensure_ascii=False, indent=2)
+
+    # ══ FOJTVA ≠ NINCS ADAT ═══════════════════════════════════════════════
+    # A ketto MEROBEN mas allitas a vilagrol. A "missing" azt mondja: ilyen
+    # adat nincs. A "rate_limited" azt: van, csak MOST nem tudtuk elhozni.
+    # Egy brief az elsobol azt irja, hogy "a Fed alapkamat nem elerheto" —
+    # ami hamis. Merve 2026-08-30: parhuzamos terheles alatt a FRED 429-et,
+    # majd 403-at adott, es a lanc "missing"-kent jelentette.
+    if _rate_limited:
+        return json.dumps({
+            "country": country,
+            "indicator": indicator,
+            "status": "rate_limited",
+            "retry_after_seconds": 60,
+            "throttled_resolvers": sorted(set(_rate_limited)),
+            "fallback_chain": [a["resolver"] for a in attempts],
+            "all_attempts": attempts,
+            "error": (
+                f"({country}, {indicator}): a forras(ok) MEGFOJTOTTAK a kerest "
+                f"({', '.join(sorted(set(_rate_limited)))}). EZ NEM AZT JELENTI, "
+                f"HOGY AZ ADAT NEM LETEZIK — csak most nem tudtuk elhozni."
+            ),
+            "agent_instruction": (
+                "NE ird azt, hogy az adat nem elerheto vagy hianyzik. Probald "
+                "ujra kb. egy perc mulva, vagy — ha a brief nem varhat — mondd "
+                "ki, hogy a forras atmenetileg korlatozott, es a szamot nem "
+                "tudtad megerositeni."
             ),
         }, ensure_ascii=False, indent=2)
 
