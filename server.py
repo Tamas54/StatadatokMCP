@@ -4382,6 +4382,7 @@ _INDICATOR_UNIT: dict[str, tuple[str, str]] = {
 #: `CES0500000003` sorozat USD/ORAT ad, nem szazalekot.
 _UNIT_OVERRIDE: dict[tuple[str, str], tuple[str, str]] = {
     ("US", "wages"): ("USD per hour (LEVEL, not a percentage)", "level"),
+    ("TW", "wages"): ("NT dollars per month (LEVEL, not a percentage)", "level"),
 }
 
 
@@ -4455,8 +4456,13 @@ def _unit_of(country: str, indicator: str) -> tuple[str, str]:
     return _INDICATOR_UNIT.get(indicator, ("unknown — check source_used", "unknown"))
 
 
-def _implausible(indicator: str, value) -> str:
+def _implausible(indicator: str, value, country: str = "") -> str:
     """"" ha rendben; kulonben az elutasitas EMBERI indoka."""
+    # Ha az adott (orszag, indikator) par SZINTET ad, a rata-sav ertelmetlen:
+    # a tajvani havi kereset 49 343 NT dollar, ami helyes ertek es minden
+    # rata-savbol kilog.
+    if country and _UNIT_OVERRIDE.get((country, indicator), ("", ""))[1] in ("level", "index"):
+        return ""
     rng = _PLAUSIBLE_RANGE.get(indicator)
     if rng is None or value is None:
         return ""
@@ -6532,7 +6538,23 @@ async def _scrape_extract_value(url: str, rx: str, sign_aware: bool = False) -> 
     m = re.search(rx, text, flags=re.IGNORECASE)
     if not m:
         return None
-    raw = m.group(1).replace(",", ".")
+    # ⚠️ A VESSZO KETFELE DOLGOT JELENT. Magyar oldalon TIZEDES ("3,1 %"),
+    # angolon EZRES ELVALASZTO ("49,343 NT dollars"). A kod eddig mindig
+    # tizedesnek vette — merve 2026-08-31: a tajvani havi kereset 49 343
+    # NT dollarbol 49.343 lett. Nem "kicsit pontatlan": harom nagysagrend.
+    #
+    # A dontes a MINTA alapjan, nem talalgatasbol:
+    #   "49,343"      → vesszo + PONTOSAN 3 szamjegy, tovabbi jel nincs → ezres
+    #   "1,234,567"   → ismetlodo 3-as csoportok → ezres
+    #   "3,1" / "12,45" → vesszo + 1-2 szamjegy → tizedes
+    #   "1.234,5"     → pont(ok) ES vesszo → europai: pont ezres, vesszo tizedes
+    _nyers = m.group(1).strip().replace("\xa0", "").replace(" ", "")
+    if _re_mod.fullmatch(r"-?\d{1,3}(,\d{3})+", _nyers):
+        raw = _nyers.replace(",", "")                    # ezres elvalaszto
+    elif "." in _nyers and "," in _nyers:
+        raw = _nyers.replace(".", "").replace(",", ".")  # europai vegyes
+    else:
+        raw = _nyers.replace(",", ".")                   # tizedes vesszo
     try:
         val = float(raw)
     except ValueError:
@@ -7263,7 +7285,9 @@ INDICATOR_RESOLVERS.pop(("GB", "gdp"), None)
 # ⚠️ Ez SCRAPE, nem API: torekenyebb, mint egy SDMX-sorozat. Ha a DGBAS
 # atalakitja az oldalt, a resolver URESET ad — es a lanc tovabbmegy, nem
 # hazudik. A `source_used` kimondja, hogy scrape.
-_TW_URL = "https://eng.stat.gov.tw/News.aspx?n=2492&sms=11047"
+# A GYOKER-URL, nem parameterezett News.aspx: az ugyis ide iranyit at, es
+# kevesebb, ami eltorhet. (Kommandant adta meg, 2026-08-31.)
+_TW_URL = "https://eng.stat.gov.tw"
 # Az idoszak-mintat AZ INDIKATOR CIMKEJEHEZ kotjuk, nem a dokumentum elso
 # talalatahoz: az oldalon 12 mutato all egymas alatt, sajat honappal. Egy
 # globalis "elso datum" minta a GDP-elorejelzes evet ragasztana az inflaciora.
@@ -7273,11 +7297,18 @@ _TW_LABEL = {
     "cpi":                   r"CPI\s*Change\s*Rate",
     "unemployment":          r"Unemployment\s*Rate",
     "industrial_production": r"Industrial\s*Production\s*Index\s*Growth\s*Rate",
+    "wages":                 r"Monthly\s*Regular\s*Earnings",
 }
+# ⚠️ AMIT SZANDEKOSAN NEM KOTUNK BE: az oldal "Economic Growth Rate(yoy) 6.04"
+# erteke mellett az all, hogy "2027 forecast" — az egy ELOREJELZES, nem tenyadat.
+# `gdp_growth`-kent bekotve pontosan az a hazugsag lenne, ami ellen az egesz
+# esti munka szol: egy 2027-es becsles mai novekedeskent a briefben.
 for _ind, _rx in (
     ("cpi",                   r"CPI\s*Change\s*Rate[\s\S]{0,40}?(-?\d+\.\d+)\s*\(\s*yoy"),
     ("unemployment",          r"Unemployment\s*Rate[\s\S]{0,40}?(-?\d+\.\d+)\s*\(\s*%"),
     ("industrial_production", r"Industrial\s*Production\s*Index\s*Growth\s*Rate[\s\S]{0,40}?(-?\d+\.\d+)\s*\(\s*%"),
+    # A kereset SZINT (NT dollar), nem rata — a `_UNIT_OVERRIDE` mondja ki.
+    ("wages",                 r"Monthly\s*Regular\s*Earnings[\s\S]{0,80}?([\d,]+)\s*\(\s*NT"),
 ):
     INDICATOR_RESOLVERS[("TW", _ind)] = [{
         "type": "scrape", "url": _TW_URL, "rx": _rx,
@@ -7972,7 +8003,7 @@ async def get_macro_indicator(
             continue
         # HIHETOSEGI KAPU: a rossz MERTEKEGYSEG nem kevesbe karos, mint a
         # hianyzo adat — csak nehezebb eszrevenni. Tovabbmegyunk a lancon.
-        _baj = _implausible(indicator, result.get("value"))
+        _baj = _implausible(indicator, result.get("value"), country)
         if _baj:
             logger.warning("Resolver %s (%s/%s) ELUTASITVA: %s",
                            rtype, country, indicator, _baj)
