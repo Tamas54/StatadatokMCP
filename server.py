@@ -6475,6 +6475,9 @@ _NEGATIVE_WORDS: tuple[str, ...] = (
 )
 
 
+import re as _re_mod
+
+
 async def _scrape_extract_value(url: str, rx: str, sign_aware: bool = False) -> Optional[dict]:
     """Scrape a URL (JS-rendered via brave-mcp if available, else plain httpx),
     and extract the first regex match as a float value. Tries multiple
@@ -6548,9 +6551,13 @@ async def _scrape_extract_value(url: str, rx: str, sign_aware: bool = False) -> 
     from datetime import datetime as _dt
     return {
         "value": val,
+        # ⚠️ ALAPERTELMEZESBEN a LEKERES napja — mert egy tetszoleges oldalrol
+        # nem tudjuk, melyik idoszakrol szol. Aki tudja (mert az oldalon ott
+        # all), adjon `period_rx`-et a specben, es a resolver felulirja.
         "period": _dt.now().strftime("%Y-%m-%d"),
         "raw_match": m.group(0),
         "source_url": url,
+        "_text": text,          # az idoszak-kiolvasashoz; a resolver kiveszi
     }
 
 
@@ -6820,6 +6827,25 @@ async def _resolver_scrape(spec: dict) -> Optional[dict]:
     )
     if res:
         res["source"] = f"scrape {spec['url']}"
+        # ⚠️ AZ IDOSZAK NEM A LEKERES NAPJA. A scrape-resolver eddig a MAI
+        # datumot tette `period`-be, mert az oldalrol nem olvasta ki. Ez pont
+        # az a hiba, ami ellen az egesz esti munka szol: egy 2026-07-es adat
+        # 2026-08-31-kent jelent volna meg, es a brief "mai adat"-nak irja.
+        # A `period_rx` (opcionalis) kiszedi az oldalrol a valodi idoszakot,
+        # `period_fmt` pedig megmondja, hogyan ertelmezzuk.
+        prx = spec.get("period_rx")
+        if prx:
+            try:
+                szoveg = res.pop("_text", "") or ""
+                m = _re_mod.search(prx, szoveg, _re_mod.I) if szoveg else None
+                if m:
+                    _HO = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,
+                           "jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12}
+                    ho = _HO.get(m.group(1)[:3].lower())
+                    if ho:
+                        res["period"] = f"{m.group(2)}-{ho:02d}"
+            except Exception:  # noqa: BLE001 — az idoszak hianya nem viheti el az erteket
+                pass
         if spec.get("attach_decision_date"):
             md = _latest_past_meeting(spec["attach_decision_date"])
             if md:
@@ -7184,6 +7210,82 @@ for _cc, _bis in (("JP", "JP"), ("CA", "CA"), ("AU", "AU"), ("GB", "GB")):
     _k = (_cc, "policy_rate")
     _sp = {"type": "bis_direct", "area": _bis}
     INDICATOR_RESOLVERS[_k] = [_sp] + (INDICATOR_RESOLVERS.get(_k) or [])
+
+# ══════════════════════════════════════════════════════════════════════════
+# JAPAN, KINA — A NAGY GAZDASAGOK NEM LEHETNEK "NINCS ADAT"
+# ══════════════════════════════════════════════════════════════════════════
+#
+# JAPAN/cpi: az OECD DSD_PRICES a japan sorozatot 2021-06-NAL abbahagyta —
+# MINDEN meroszamon (headline, CP01, core). Merve 2026-08-30. A japan
+# statisztikai hivatal (STATJP) viszont friss, csak INDEXSZINTET ad
+# (2020=100), nem ratat: 114.2 @ 2026-07 / 111.9 @ 2025-07. A `compute_yoy`
+# ebbol szamol eves ratat → 2.06%. Ez a kulonbseg a lenyeg: NEM az index megy
+# ki inflaciokent (az lenne a NL 203.1-es hiba), hanem a belole szamolt rata.
+INDICATOR_RESOLVERS[("JP", "cpi")] = [
+    {"type": "dbnomics", "provider_code": "STATJP", "dataset_code": "CPIm",
+     "series_code": "001", "compute_yoy": True},
+] + (INDICATOR_RESOLVERS.get(("JP", "cpi")) or [])
+
+# KINA: az OECD DSD_PRICES-ban VAN es FRISS (0.5 @ 2026-07), a BIS pedig adja
+# az alapkamatot (3.0 @ 2026-06). "Zart vilag" ide vagy oda: a hivatalos
+# nemzetkozi aggregatorok atveszik.
+INDICATOR_RESOLVERS[("CN", "cpi")] = [
+    {"type": "oecd", "agency": "OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0",
+                     "key": "CHN.M.N.CPI.PA._T.N.GY"},
+] + (INDICATOR_RESOLVERS.get(("CN", "cpi")) or [])
+INDICATOR_RESOLVERS[("CN", "policy_rate")] = [
+    {"type": "bis_direct", "area": "CN"},
+] + (INDICATOR_RESOLVERS.get(("CN", "policy_rate")) or [])
+
+# GB/gdp: az ONS-nel a NOVEKEDES van meg (`gdp_growth`, PN2 → 1.2 @ 2026-Q2),
+# SZINT nincs. A halott `gdp`-lancot inkabb ELVESSZUK, mint hogy "missing"-et
+# adjon: igy a hivo a "nincs par" agra esik, ami FELSOROLJA, mi VAN ehhez az
+# orszaghoz — egy gyengebb modellnek ez a kulonbseg dontő.
+INDICATOR_RESOLVERS.pop(("GB", "gdp"), None)
+
+# ══════════════════════════════════════════════════════════════════════════
+# TAJVAN — A HIVATALOS FORRASBOL, MERT MASHOL NINCS
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Tajvan sehol nincs meg a szokasos aggregatorokban, es ennek OKA van: nem
+# IMF-tag. Merve 2026-08-31:
+#   IMF IFS  M.TW.PCPI_IX  → a sorozat LETEZIK, de NULLA megfigyelessel
+#   ILO      CPI_MCPI      → 2014-12 (tizenket ev)
+#   UNCTAD   CPIA          → 2020
+#   WB GEM                 → 2024, eves, indexszint
+#   OECD                   → csak "Chinese Taipei" kereskedelmi keszletek
+#
+# A DGBAS (tajvani statisztikai hivatal) angol nyelvu oldala VISZONT friss es
+# nyilvanos — csak JS-bol tolti a szamokat, ezert renderelo scrape kell.
+# Merve ugyanazon a napon: CPI 2.54 (yoy) · munkanelkuliseg 3.39 · ipari
+# termeles 25.61 — mind 2026-07.
+#
+# ⚠️ Ez SCRAPE, nem API: torekenyebb, mint egy SDMX-sorozat. Ha a DGBAS
+# atalakitja az oldalt, a resolver URESET ad — es a lanc tovabbmegy, nem
+# hazudik. A `source_used` kimondja, hogy scrape.
+_TW_URL = "https://eng.stat.gov.tw/News.aspx?n=2492&sms=11047"
+# Az idoszak-mintat AZ INDIKATOR CIMKEJEHEZ kotjuk, nem a dokumentum elso
+# talalatahoz: az oldalon 12 mutato all egymas alatt, sajat honappal. Egy
+# globalis "elso datum" minta a GDP-elorejelzes evet ragasztana az inflaciora.
+# A `[\s\S]{0,120}?` atlepi a markdown-diszitest (`_2.54(yoy, %)_`), ami az
+# elso valtozatomat megbuktatta.
+_TW_LABEL = {
+    "cpi":                   r"CPI\s*Change\s*Rate",
+    "unemployment":          r"Unemployment\s*Rate",
+    "industrial_production": r"Industrial\s*Production\s*Index\s*Growth\s*Rate",
+}
+for _ind, _rx in (
+    ("cpi",                   r"CPI\s*Change\s*Rate[\s\S]{0,40}?(-?\d+\.\d+)\s*\(\s*yoy"),
+    ("unemployment",          r"Unemployment\s*Rate[\s\S]{0,40}?(-?\d+\.\d+)\s*\(\s*%"),
+    ("industrial_production", r"Industrial\s*Production\s*Index\s*Growth\s*Rate[\s\S]{0,40}?(-?\d+\.\d+)\s*\(\s*%"),
+):
+    INDICATOR_RESOLVERS[("TW", _ind)] = [{
+        "type": "scrape", "url": _TW_URL, "rx": _rx,
+        # Az oldalon minden szam mellett ott all az idoszak: "Jul. 2026".
+        # Enelkul a `period` a lekeres napja lenne — egy 2026-07-es adat
+        # 2026-08-31-kent, "mai adat"-kent kerulne a briefbe.
+        "period_rx": _TW_LABEL[_ind] + r"[\s\S]{0,120}?([A-Z][a-z]{2})\.?\s+(\d{4})",
+    }]
 
 # Component-label mapping: indicator → markdown bold label in press release
 _EUROSTAT_PRESS_LABELS: dict[str, str] = {
