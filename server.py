@@ -4137,6 +4137,31 @@ _EUROSTAT_CALENDAR = {
 }
 
 
+def _snap_to_business_day(d):
+    """Hetvegerol a MEGELOZO munkanapra igazitas.
+
+    ⚠️ MIERT KELL (Kommandant-lelet, 2026-08-30): a naptar VASARNAPRA (08-30)
+    tett egy "US Consumer Sentiment (UMich) 10:00 ET" eseményt, es az bekerult
+    a briefbe "a mai egyetlen esemeny" cimmel. Az amerikai statisztikai
+    kiadvanyok SOHA nem hetvegen jelennek meg — a `delay_days`-alapu becsles
+    viszont naptari napokkal szamol, ezert a honap vegehez kotott kiadvanyok
+    (UMCSENT: delay_days=-2) rendszeresen szombatra/vasarnapra esnek.
+
+    A megelozo munkanapra igazitunk, nem a kovetkezore: a honap-vegi
+    kiadvanyok (UMich final) az utolso PENTEKEN jonnek — 2026 augusztusban
+    28-an, nem 30-an.
+
+    NEM oldja meg az unnepnapokat (Labor Day, Thanksgiving) — ahhoz hivatalos
+    BLS/BEA release-naptar kell, lasd a spec 3. pontjat.
+    """
+    while d.weekday() >= 5:          # 5=szombat, 6=vasarnap
+        d = d - _cal_timedelta(days=1)
+    return d
+
+
+from datetime import timedelta as _cal_timedelta
+
+
 def _estimate_release_dates(freq: str, delay_days: int, start_date, end_date) -> list[str]:
     """Estimate release dates based on frequency and typical delay."""
     from datetime import date as date_cls, timedelta
@@ -4149,10 +4174,12 @@ def _estimate_release_dates(freq: str, delay_days: int, start_date, end_date) ->
             # Reference month end → add delay
             next_month_1st = (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
             if delay_days >= 0:
-                release = next_month_1st + timedelta(days=delay_days - 1)
+                release = _snap_to_business_day(
+                    next_month_1st + timedelta(days=delay_days - 1))
             else:
                 # Negative delay = released before month end
-                release = next_month_1st + timedelta(days=delay_days)
+                release = _snap_to_business_day(
+                    next_month_1st + timedelta(days=delay_days))
             if start_date <= release <= end_date:
                 dates.append(release.isoformat())
             cur = next_month_1st
@@ -4160,7 +4187,7 @@ def _estimate_release_dates(freq: str, delay_days: int, start_date, end_date) ->
         from datetime import date as d
         for year in range(start_date.year - 1, end_date.year + 1):
             for q_end in [d(year, 3, 31), d(year, 6, 30), d(year, 9, 30), d(year, 12, 31)]:
-                release = q_end + timedelta(days=delay_days)
+                release = _snap_to_business_day(q_end + timedelta(days=delay_days))
                 if start_date <= release <= end_date:
                     dates.append(release.isoformat())
 
