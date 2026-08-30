@@ -4137,6 +4137,59 @@ _EUROSTAT_CALENDAR = {
 }
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# HIHETOSEGI KAPU — INDEXSZINT SOSE MEHET AT RATAKENT
+# ══════════════════════════════════════════════════════════════════════════
+#
+# MERT (2026-08-30, teljes audit 83 paron): a resolver-lanc HIHETO, DE ROSSZ
+# szamokat engedett at, mert csak azt nezte, hogy VAN-e ertek es FRISS-e:
+#     NL/cpi 203.1  · CA/cpi 221.0  · AU/unemployment 63.9
+# Ezek nem inflaciok es nem munkanelkulisegi ratak, hanem INDEXSZINTEK, amiket
+# a web-kereses szedett fel. Egy ilyen szam a briefben katasztrofa: forras-
+# cimkevel, magabiztosan, ellenorizhetetlenul.
+#
+# A kapu NEM azt dontii el, hogy egy szam IGAZ-e — azt nem tudjuk. Azt donti
+# el, hogy egyaltalan LEHET-E az adott mennyiseg. Egy 221%-os eves inflacio
+# nem lehetetlen a vilagon (Zimbabwe, Venezuela), de az EU/OECD-korben, ahol
+# ez a szolgaltatas mozog, egy 221-es "cpi" bizonyosan indexszint. Ezert a
+# hatarok nagyvonaluak: csak a NYILVANVALO alakhibat fogjak.
+#
+# Ha egy ertek kiesik, a lanc MEGY TOVABB a kovetkezo resolverre — nem
+# hazudunk hianyt ott, ahol csak a forras volt rossz.
+_PLAUSIBLE_RANGE: dict[str, tuple[float, float]] = {
+    "cpi":                   (-20.0, 60.0),
+    "core_cpi":              (-20.0, 60.0),
+    "services_cpi":          (-20.0, 60.0),
+    "energy_cpi":            (-80.0, 200.0),   # energia tud +100%-ot mozdulni
+    "food_cpi":              (-30.0, 80.0),
+    "hicp":                  (-20.0, 60.0),
+    "ppi":                   (-50.0, 100.0),
+    "unemployment":          (0.0, 40.0),
+    "policy_rate":           (-5.0, 60.0),
+    "bond_yield_10y":        (-5.0, 60.0),
+    "gdp_growth":            (-30.0, 30.0),
+    "wages":                 (-30.0, 60.0),
+    "retail_trade":          (-40.0, 40.0),
+    "industrial_production": (-40.0, 40.0),
+}
+
+
+def _implausible(indicator: str, value) -> str:
+    """"" ha rendben; kulonben az elutasitas EMBERI indoka."""
+    rng = _PLAUSIBLE_RANGE.get(indicator)
+    if rng is None or value is None:
+        return ""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return f"nem szam: {value!r}"
+    lo, hi = rng
+    if not (lo <= v <= hi):
+        return (f"{v} kivul a(z) `{indicator}` hihetо savjan ({lo}..{hi}) — "
+                f"szinte biztosan INDEXSZINT vagy mas mertekegyseg, nem rata")
+    return ""
+
+
 def _snap_to_business_day(d):
     """Hetvegerol a MEGELOZO munkanapra igazitas.
 
@@ -5248,13 +5301,22 @@ _FRESHNESS_DAYS: dict[str, int] = {
     "energy_cpi": 60,
     "food_cpi": 60,
     "policy_rate": 75,   # Monthly meetings; flash decision page must be <2.5mo
-    "unemployment": 75,  # Monthly, published with 1–2 month lag (Eurostat)
-    "gdp": 150,          # Quarterly absolute value
-    "gdp_growth": 150,   # Quarterly YoY%
-    "ppi": 60,           # Monthly producer prices
+    "unemployment": 95,  # Monthly, published with 1–2 month lag (Eurostat)
+    "gdp": 185,          # Quarterly absolute value
+    "gdp_growth": 185,   # Quarterly YoY%
+    # ⚠️ A KUSZOB A PUBLIKALASI UTEMET KOVESSE, NE A VAGYAT (2026-08-30).
+    # Ha a legfrissebb LETEZO megfigyelest "stale"-nek jeloljuk, azzal azt
+    # sugalljuk, hogy van ujabb — es a brief "elavult adat"-ot ir oda, ahol a
+    # valosag az, hogy a hivatal meg nem publikalt tobbet. Merve ma:
+    #   EA/HU PPI  legujabb 2026-06  (kb. 6-7 het keses)  -> 60 nap szuk volt
+    #   AU/JP munkanelkuliseg 2026-06 (OECD-atvetel, ~2 ho) -> 75 nap szuk volt
+    #   US GDP     legujabb 2026-Q2  (negyedeves)          -> 150 nap szuk volt
+    # A savok igy a TENYLEGES kesest fedik, egy tartalek honappal. Ami ezen
+    # tul van (pl. GB CPI 2020-11), az tovabbra is joggal stale.
+    "ppi": 90,           # Monthly producer prices
     "wages": 90,         # Monthly with longer lag (Eurostat quarterly)
-    "retail_trade": 75,
-    "industrial_production": 75,
+    "retail_trade": 95,
+    "industrial_production": 95,
     "trade_balance": 90,
     "gov_debt": 180,     # Quarterly, often a quarter lag
     "house_prices": 180,
@@ -6314,6 +6376,49 @@ async def _resolver_fred(spec: dict) -> Optional[dict]:
     }
 
 
+async def _resolver_fred_range(spec: dict) -> Optional[dict]:
+    """Resolver: SAV-jellegu jegybanki kamat (Fed) — ket szel + effektiv.
+
+    ⚠️ MIERT KULON RESOLVER (Kommandant-lelet, 2026-08-30): a Fed NEM egyetlen
+    kamatot allapit meg, hanem CELSAVOT. Merve ugyanarra a napra:
+        DFEDTARL 3.50  ·  DFEDTARU 3.75  ·  DFF (effektiv) 3.63
+    A rendszer eddig egyetlen szamot adott vissza, jelolelten, hogy melyik
+    szelet — ezert adott ugyanarra a kerdesre egyszer 3,75-ot, masszor 3,5-ot.
+    Egyik sem volt hibas: KET KULONBOZO SZEL ugyanabbol a savbol. A hiba az
+    volt, hogy egy SAVOT egyetlen szamkent kezeltunk.
+
+    A `value` a felso szel marad (ez a szokasos rovidites), de a `rate_range`
+    mindig ott van, hogy a fogyaszto a TELJES savot irhassa ki: "3,50–3,75%".
+    """
+    async def _egy(sid):
+        raw = await get_fred_data(series_id=sid, limit=1, sort_order="desc")
+        try:
+            d = json.loads(raw)
+        except Exception:
+            return None, None
+        rows = d.get("data") or []
+        if not rows:
+            return None, None
+        return rows[0].get("value"), rows[0].get("date")
+
+    up, per = await _egy(spec.get("upper", "DFEDTARU"))
+    if up is None:
+        return None
+    lo, _ = await _egy(spec.get("lower", "DFEDTARL"))
+    eff, _ = await _egy(spec.get("effective", "DFF"))
+    return {
+        "value": up,
+        "period": per,
+        "source": "FRED Fed funds TARGET RANGE (DFEDTARL/DFEDTARU/DFF)",
+        "rate_range": {"lower": lo, "upper": up, "effective": eff},
+        "methodology_note": (
+            f"A Fed CELSAVOT allapit meg, nem egyetlen kamatot: "
+            f"{lo}–{up}% (effektiv {eff}%). A briefben a TELJES SAVOT ird ki; "
+            f"egyetlen szel ({up}%) onmagaban felrevezeto."
+        ),
+    }
+
+
 async def _resolver_ksh_stadat(spec: dict) -> Optional[dict]:
     """Resolver: KSH STADAT — parses transposed monthly tables and (optionally)
     converts base-index values to YoY% by dividing by the previous-year cell.
@@ -6625,6 +6730,92 @@ for _cc, _nev in _EUROSTAT_PRESS_COUNTRIES.items():
             _spec,
             {"type": "eurostat", "dataset_code": "prc_hicp_manr", "geo": _cc},
         ]
+
+# ══════════════════════════════════════════════════════════════════════════
+# US MAKRO — FRED, NEM WEB-KERESES
+# ══════════════════════════════════════════════════════════════════════════
+#
+# MERT (teljes audit 83 paron, 2026-08-30): az amerikai indikatorok fele
+# web-keresesig esett, ot pedig egyaltalan nem oldodott fel:
+#   HIBA : ppi, retail_trade, industrial_production, house_prices, services_cpi
+#   WEB  : policy_rate, unemployment, gdp, wages
+#
+# A `policy_rate` a legsulyosabb: a web-kereses ugyanarra a kerdesre eloszor
+# 3,75-ot, majd 3,5-ot adott. Nem egyszeruen rossz — NEM DETERMINISZTIKUS.
+# Egy jegybanki alapkamat nem lehet talalati lista fuggvenye.
+#
+# Mind a tizenketto MEGVAN a FRED-ben, hitelesen. Az indexsorozatokat a
+# `units="pc1"` (eves valtozas %) teszi ratava — ez az altalanos kulcs, amitol
+# nem kell sorozatonkent szamolgatni. MERVE (2026-08-30, mind friss):
+#   policy_rate 3.75 · unemployment 4.1 · cpi 3.30 · core_cpi 2.47
+#   services_cpi 3.07 · ppi 8.27 · retail_trade 5.01 · ind_prod 1.08
+#   house_prices 1.53 · wages 3.15 · gdp_growth 1.5 · 10Y 4.67
+_US_FRED: dict[str, dict] = {
+    # A Fed CELSAVOT allapit meg — kulon resolver, lasd `_resolver_fred_range`.
+    "policy_rate":           {"_type": "fred_range"},
+    "unemployment":          {"series_id": "UNRATE"},
+    "cpi":                   {"series_id": "CPIAUCSL", "units": "pc1"},
+    "core_cpi":              {"series_id": "CPILFESL", "units": "pc1"},
+    "services_cpi":          {"series_id": "CUSR0000SAS", "units": "pc1"},
+    "ppi":                   {"series_id": "PPIACO", "units": "pc1"},
+    "retail_trade":          {"series_id": "RSAFS", "units": "pc1"},
+    "industrial_production": {"series_id": "INDPRO", "units": "pc1"},
+    "house_prices":          {"series_id": "CSUSHPINSA", "units": "pc1"},
+    "wages":                 {"series_id": "CES0500000003", "units": "pc1"},
+    "gdp_growth":            {"series_id": "A191RL1Q225SBEA"},
+    "bond_yield_10y":        {"series_id": "DGS10"},
+}
+
+for _ind, _args in _US_FRED.items():
+    _t = _args.pop("_type", "fred")
+    _spec = {"type": _t, **_args}
+    _meglevo = INDICATOR_RESOLVERS.get(("US", _ind))
+    # A FRED a lanc ELEJERE: hiteles, determinisztikus, es datumozott
+    # idoszakot ad (a brave_search a MAI napot irta idoszaknak).
+    if _meglevo:
+        if not any(r.get("type") == _t and r.get("series_id") == _args.get("series_id")
+                   for r in _meglevo):
+            INDICATOR_RESOLVERS[("US", _ind)] = [_spec] + _meglevo
+    else:
+        INDICATOR_RESOLVERS[("US", _ind)] = [_spec]
+
+# ══════════════════════════════════════════════════════════════════════════
+# EUROSTAT STS — EGYSEG-SZUROVEL, KULONBEN A MERTEKEGYSEG DEFINIALATLAN
+# ══════════════════════════════════════════════════════════════════════════
+#
+# MERT (audit, 2026-08-30): a `sts_*` lekeresek `unit` szuro NELKUL futottak,
+# es az Eurostat ilyenkor TETSZOLEGES egyseg-szeletet ad vissza. Merve
+# ugyanarra a honapra (HU PPI, 2026-06):
+#     szuro nelkul  -6.2      (ismeretlen egyseg — index? havi valtozas?)
+#     PCH_SM-mel    -0.4      (eves valtozas %, ez a kerdes)
+# A szam mindket esetben "ertelmes" — csak az egyike valaszol a feltett
+# kerdesre. Ugyanaz a hibaosztaly, mint az indexszint ratakent.
+#
+# GEO: az euroovezet kodja ezekben a keszletekben EA21 (2026-01-tol, Bulgaria
+# belepese ota), NEM "EA" — az utobbi ures dimenziot ad.
+_EUROSTAT_STS: dict[tuple[str, str], dict] = {
+    ("EA", "ppi"):                   {"dataset_code": "sts_inpp_m", "geo": "EA21",
+                                      "filters": "unit=PCH_SM&nace_r2=B-E36&s_adj=NSA&indic_bt=PRC_PRR"},
+    ("EA", "retail_trade"):          {"dataset_code": "sts_trtu_m", "geo": "EA21",
+                                      "filters": "unit=PCH_SM&nace_r2=G47&s_adj=CA"},
+    ("EA", "industrial_production"): {"dataset_code": "sts_inpr_m", "geo": "EA21",
+                                      "filters": "unit=PCH_SM&nace_r2=B-D&s_adj=CA"},
+    ("HU", "ppi"):                   {"dataset_code": "sts_inpp_m", "geo": "HU",
+                                      "filters": "unit=PCH_SM&nace_r2=B-E36&s_adj=NSA&indic_bt=PRC_PRR"},
+}
+for _k, _a in _EUROSTAT_STS.items():
+    _sp = {"type": "eurostat", **_a}
+    _m = INDICATOR_RESOLVERS.get(_k)
+    INDICATOR_RESOLVERS[_k] = ([_sp] + _m) if _m else [_sp]
+
+# Nemzetkozi kiegeszitesek, amik a MERES szerint frissek. A tobbi FRED/OECD
+# nemzetkozi sorozat (GB/JP/CA/AU cpi) 2025-ös vagy halott — azokat NEM kotjuk
+# be: jobb a bevallott hiany, mint egy evekkel ezelotti szam frissnek adva.
+for _k, _sid in ((("JP", "policy_rate"), "IRSTCI01JPM156N"),
+                 (("GB", "unemployment"), "LRHUTTTTGBM156S")):
+    _sp = {"type": "fred", "series_id": _sid}
+    _m = INDICATOR_RESOLVERS.get(_k)
+    INDICATOR_RESOLVERS[_k] = ([_sp] + _m) if _m else [_sp]
 
 # Component-label mapping: indicator → markdown bold label in press release
 _EUROSTAT_PRESS_LABELS: dict[str, str] = {
@@ -7043,6 +7234,7 @@ _RESOLVERS = {
     "eurostat": _resolver_eurostat,
     "eurostat_press": _resolver_eurostat_press,
     "fred": _resolver_fred,
+    "fred_range": _resolver_fred_range,
     "dbnomics": _resolver_dbnomics,
     "oecd": _resolver_oecd,
     "ksh_stadat": _resolver_ksh_stadat,
@@ -7156,6 +7348,15 @@ async def get_macro_indicator(
         if not result or result.get("value") is None:
             attempts.append({"resolver": rtype, "outcome": "empty"})
             continue
+        # HIHETOSEGI KAPU: a rossz MERTEKEGYSEG nem kevesbe karos, mint a
+        # hianyzo adat — csak nehezebb eszrevenni. Tovabbmegyunk a lancon.
+        _baj = _implausible(indicator, result.get("value"))
+        if _baj:
+            logger.warning("Resolver %s (%s/%s) ELUTASITVA: %s",
+                           rtype, country, indicator, _baj)
+            attempts.append({"resolver": rtype, "outcome": "implausible",
+                             "value": result.get("value"), "reason": _baj})
+            continue
         got_period = str(result.get("period") or "")
 
         # ══ KONKRET IDOSZAK KERESE (2026-08-30) ═════════════════════════
@@ -7240,7 +7441,7 @@ async def get_macro_indicator(
             }
             # Optional context fields propagated from resolver
             for key in ("decision_date", "is_flash", "release_date",
-                        "release_type", "time_series", "raw_index"):
+                        "release_type", "time_series", "raw_index", "rate_range"):
                 if result.get(key) is not None:
                     out_payload[key] = result[key]
             if methodology_note:
