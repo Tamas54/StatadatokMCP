@@ -60,6 +60,24 @@ logger = logging.getLogger("statdata")
 # ---------------------------------------------------------------------------
 mcp = FastMCP(
     "StatData",
+    # A BELEPESI PONT KIMONDASA. Egy alugynok 18 tool kozul valaszt, es a
+    # nevek alapjan a rossz felet valasztja: a `recipe_book` nyers sorozat-
+    # koordinatakat ad (amik ~8 honapot loghatnak), az `mnb_rates` DEVIZA-
+    # arfolyam, nem alapkamat. Enelkul az elso hivas gyakran rossz.
+    instructions=(
+        "FRISS MAKRO-SZAMHOZ MINDIG `get_macro_indicator(country, indicator)` az "
+        "ELSO hivas — ez valaszt forrast (Eurostat sajtokozlemeny / ECB / FRED / "
+        "KSH) es megmondja a `source_used`-ban, honnan van. Konkret idoszakhoz: "
+        "`period=\"2026-03\"` (nullazott honap) vagy `\"2026-Q2\"`.\n"
+        "Nyers idosor vagy dimenzio-bontas: get_eurostat_data / get_ecb_data / "
+        "get_fred_data / get_ksh_stadat. Legfrissebb PUBLIKACIO (a strukturalt "
+        "sorozat elott): get_flash_releases. Fogalmak es egysegek: statdata_help.\n"
+        "⚠️ AZ EGYSEGET SOSE TALALD KI. Ugyanaz a mennyiseg lehet indexszint "
+        "(2015=100), szint (millio EUR, USD/ora) vagy eves valtozas %. Ha a "
+        "valaszbol nem derul ki, kerdezd meg a `statdata_help`-et — ne tippelj.\n"
+        "⚠️ `mnb_rates` = DEVIZAARFOLYAM, nem jegybanki alapkamat. Az MNB "
+        "alapkamathoz: get_macro_indicator(country=\"HU\", indicator=\"policy_rate\")."
+    ),
     stateless_http=True,
     json_response=True,
     host="0.0.0.0",
@@ -2763,6 +2781,11 @@ def mnb_rates(
 ) -> str:
     """Official MNB (Hungarian National Bank) HUF exchange rates — current or historical.
 
+    ⚠️ NEM A JEGYBANKI ALAPKAMAT. Ez DEVIZAARFOLYAM-tabla (EUR/HUF, USD/HUF, …).
+    Az MNB alapkamathoz:
+        get_macro_indicator(country="HU", indicator="policy_rate")
+    (az `decision_date` mezot is megadja, tehat az IRANY is levezetheto).
+
     Two modes:
       - mode="current" (default): Get today's official MNB exchange rates.
       - mode="historical": Get daily rates for a date range (needs start_date, end_date).
@@ -3940,6 +3963,10 @@ async def forecast(
         "CA": "CAN", "AU": "AUS", "KR": "KOR", "IN": "IND",
         "BR": "BRA", "MX": "MEX", "TR": "TUR", "ZA": "ZAF",
         "RS": "SRB", "UA": "UKR", "GR": "GRC", "EL": "GRC",
+        # Az IMF WEO az euroovezetet "EUQ" aggregatumkent tartja. Enelkul a
+        # `forecast(country="EA")` "Unknown country"-t adott — pedig a Bridge
+        # briefjei epp EA/HU/US harmasban gondolkodnak.
+        "EA": "EUQ", "EZ": "EUQ", "EMU": "EUQ",
     }
 
     # Hard-reject unknown country codes. Earlier behavior silently fell through
@@ -4061,6 +4088,33 @@ async def forecast(
             seasonal = {1: -0.15, 2: 0.10, 3: 0.08, 4: -0.03}
             ultimate = round(ultimate + seasonal.get(q, 0), 2)
 
+        # ── LEZART EV: TENY, NEM ELOREJELZES ─────────────────────────────
+        # MERVE (audit, 2026-08-30): a `forecast(HU, gdp, 2019)` 4.96-ot adott
+        # "ultimate_forecast" neven, holott az IMF TENYADATA 5.1 — vagyis a
+        # rendszer egy LEZART EV ismert szamat torzitotta el, es elorejelzesnek
+        # cimkezte. Egy multbeli evre nem josolunk: visszaadjuk a tenyt, es
+        # kimondjuk, hogy az teny.
+        from datetime import datetime as _fc_dt
+        _mai_ev = _fc_dt.now().year
+        # ⚠️ A KULCS LEHET INT VAGY STR. A JSON-kimenet MINDIG stringgé alakítja
+        # a dict-kulcsokat, ezért a valaszban "2019" latszik — a memoriaban
+        # viszont int 2019 all. Az elso valtozatom csak `str(year)`-t keresett,
+        # es ezert NEM talalt: a kimenet vezetett felre, nem a kod.
+        _kulcs = None
+        if imf_all_years and year < _mai_ev:
+            for _k in (year, str(year)):
+                if _k in imf_all_years:
+                    _kulcs = _k
+                    break
+        _lezart = _kulcs is not None
+        if _lezart:
+            try:
+                ultimate = round(float(imf_all_years[_kulcs]), 2)
+                li_adjustment = 0.0
+                confidence = 100
+            except (TypeError, ValueError):
+                _lezart = False
+
         spread = {"gdp": 0.8, "inflation": 1.0, "unemployment": 0.5}.get(indicator, 0.8)
 
         result = {
@@ -4069,7 +4123,20 @@ async def forecast(
             "year": year,
             "quarter": q,
             "ultimate_forecast": ultimate,
+            # A `kind` a legfontosabb mezo egy fogyaszto szamara: TENY vagy
+            # BECSLES? Eddig semmi nem valaszolta meg.
+            "kind": "actual" if _lezart else "projection",
+            "kind_note": (
+                f"{year} LEZART EV — ez az IMF TENYADATA, nem elorejelzes."
+                if _lezart else
+                f"{year} BECSLES (IMF WEO projekcio + piaci korrekcio), nem teny."
+            ),
             "confidence": round(confidence, 1),
+            "confidence_note": (
+                "A `confidence` NEM statisztikai konfidencia-intervallum, hanem "
+                "egy belso heurisztika (forrasszam es piaci kompozit fuggvenye). "
+                "NE idezd szazalekos bizonyossagkent."
+            ),
             "sources": sources,
             "leading_indicator_adjustment": li_adjustment,
             "scenarios": {
@@ -4079,13 +4146,44 @@ async def forecast(
             } if ultimate else None,
             "quarterly_breakdown": quarterly_breakdown,
             "imf_all_years": imf_all_years,
-            "composite_score": round(composite.get("composite_score", 0), 1),
-            "gdp_signal": composite.get("gdp_growth_signal", "unknown"),
-            "recession_probability": round(composite.get("recession_probability", 0), 1),
-            "is_quarterly": q is not None,
+            # ── AMI GLOBALIS, ES NEM ORSZAGSPECIFIKUS ─────────────────────
+            # A composite/gdp_signal/recession_probability GLOBALIS piaci
+            # mutatokbol (VIX, olaj, rez, hozamgorbe, ifo) szamolt szam.
+            # MERVE 2026-08-30: Romania es Torokorszag PONTOSAN ugyanazt kapta
+            # (32.4 / STRONG_GROWTH / 6%), es ugyanaz a magyar ertek 8 perc
+            # alatt 20%-rol 49%-ra ugrott, hir nelkul — a 10 perces cache
+            # ujratoltese miatt. Briefben idezhetetlen.
+            # Ezert a nevuk kimondja, hogy GLOBALIS, es kapnak egy figyelmezteto
+            # mezot. A szamokat NEM toroljuk (van informaciotartalmuk a piaci
+            # hangulatrol), de nem lehet oket orszagos elorejelzeskent olvasni.
+            "global_market_composite": round(composite.get("composite_score", 0), 1),
+            "global_gdp_signal": composite.get("gdp_growth_signal", "unknown"),
+            "global_recession_probability": round(composite.get("recession_probability", 0), 1),
+            "global_indicators_caveat": (
+                "A `global_*` mezok VILAGPIACI mutatokbol szamolnak (VIX, olaj, "
+                "rez, hozamgorbe, ifo) — NEM orszagspecifikusak, es 10 percenkent "
+                "ujraszamolodnak. Ket kulonbozo orszag ugyanazt az erteket kapja. "
+                "NE idezd oket orszagos elorejelzeskent es NE epits rajuk "
+                "narrativat egy briefben."
+            ),
+            "is_quarterly": bool(q is not None and indicator == "gdp"),
+            "quarterly_caveat": (
+                None if indicator == "gdp" else
+                f"A negyedeves bontas csak GDP-re ertelmezett. A(z) `{indicator}` "
+                f"ERTEKE AZ EVES SZAM, nem negyedeves — ne cimkezd Q{q}-nek."
+            ) if q is not None else None,
             "source_description": (
-                "Ensemble: IMF WEO (50%) + SAJÁT Phillips/Okun (30%) + FRED/OECD (20%), "
-                "adjusted by leading indicators (ifo, yield curve, VIX, sentiment)."
+                # ⚠️ AZ ELOZO SZOVEG NEM VOLT IGAZ (audit, 2026-08-30): "Ensemble:
+                # IMF WEO (50%) + SAJAT Phillips/Okun (30%) + FRED/OECD (20%)".
+                # A "SAJAT" lab HALOTT KOD: az `_ensure_sajat_cache` definialva
+                # van, de NULLA hivohellyel, es a `sources.sajat` egyetlen eles
+                # hivasban sem jelent meg. Egy eszkoz, ami tobbet allit magarol,
+                # mint ami, rosszabb annal, mint ami keveset tud: a fogyaszto a
+                # nem letezo modszertanra hivatkozik tovabb.
+                "IMF WEO eves projekcio (elsodleges) + ahol van, FRED/OECD aktualis "
+                "ertek; a ketto sulyozott atlaga, globalis piaci mutatokbol szamolt "
+                "kis korrekcioval. A `sources` mezo mutatja, MI szolt bele "
+                "TENYLEGESEN ebbe a valaszba."
             ),
         }
 
@@ -4171,6 +4269,13 @@ _PLAUSIBLE_RANGE: dict[str, tuple[float, float]] = {
     "wages":                 (-30.0, 60.0),
     "retail_trade":          (-40.0, 40.0),
     "industrial_production": (-40.0, 40.0),
+    # ⚠️ EZ A SOR EGY ELO HIBABOL SZULETETT: a `("HU","gov_debt")` resolver
+    # `na_item` szuro nelkul futott, es 28.4-et adott "friss"-kent — Magyar-
+    # orszag allamadossaga 77.7% a GDP aranyaban. A rossz szeletet semmi nem
+    # fogta meg, mert a `gov_debt` nem szerepelt ebben a tablaban. Egy hianyzo
+    # sav ugyanolyan lyuk, mint egy hianyzo szuro.
+    "gov_debt":              (0.0, 350.0),   # Japan ~250%, ez a realis plafon
+    "house_prices":          (-40.0, 60.0),
 }
 
 
@@ -5314,18 +5419,18 @@ _FRESHNESS_DAYS: dict[str, int] = {
     # A savok igy a TENYLEGES kesest fedik, egy tartalek honappal. Ami ezen
     # tul van (pl. GB CPI 2020-11), az tovabbra is joggal stale.
     "ppi": 90,           # Monthly producer prices
-    "wages": 90,         # Monthly with longer lag (Eurostat quarterly)
+    "wages": 175,         # Monthly with longer lag (Eurostat quarterly)
     "retail_trade": 95,
     "industrial_production": 95,
     "trade_balance": 90,
     "gov_debt": 180,     # Quarterly, often a quarter lag
     "house_prices": 180,
     "bond_yield_10y": 60,  # Daily/monthly; long-term Maastricht yield
-    "gdp_consumption": 150,  # Quarterly GDP components
-    "gdp_investment": 150,
-    "gdp_exports": 150,
-    "gdp_imports": 150,
-    "gdp_government": 150,
+    "gdp_consumption": 175,  # Quarterly GDP components
+    "gdp_investment": 175,
+    "gdp_exports": 175,
+    "gdp_imports": 175,
+    "gdp_government": 175,
 }
 
 # Per-(country, indicator) resolver chain. Each resolver is a dict with `type`
@@ -6793,15 +6898,49 @@ for _ind, _args in _US_FRED.items():
 #
 # GEO: az euroovezet kodja ezekben a keszletekben EA21 (2026-01-tol, Bulgaria
 # belepese ota), NEM "EA" — az utobbi ures dimenziot ad.
+# Minden sor ELESBEN MERVE (2026-08-30). A `filters` MINDEN dimenziot megnevez:
+# szuro nelkul az Eurostat tetszoleges szeletet ad — az EA retail_trade
+# `indic_bt` nelkul 3.1-et adott, VOL_SLS-sel 0.7-et. Mindketto "ertelmes".
 _EUROSTAT_STS: dict[tuple[str, str], dict] = {
     ("EA", "ppi"):                   {"dataset_code": "sts_inpp_m", "geo": "EA21",
                                       "filters": "unit=PCH_SM&nace_r2=B-E36&s_adj=NSA&indic_bt=PRC_PRR"},
     ("EA", "retail_trade"):          {"dataset_code": "sts_trtu_m", "geo": "EA21",
-                                      "filters": "unit=PCH_SM&nace_r2=G47&s_adj=CA"},
+                                      "filters": "unit=PCH_SM&nace_r2=G47&s_adj=CA&indic_bt=VOL_SLS"},
     ("EA", "industrial_production"): {"dataset_code": "sts_inpr_m", "geo": "EA21",
-                                      "filters": "unit=PCH_SM&nace_r2=B-D&s_adj=CA"},
+                                      "filters": "unit=PCH_SM&nace_r2=B-D&s_adj=CA&indic_bt=PRD"},
+    ("EA", "gov_debt"):              {"dataset_code": "gov_10q_ggdebt", "geo": "EA21",
+                                      "filters": "unit=PC_GDP&sector=S13&na_item=GD"},
+    ("EA", "trade_balance"):         {"dataset_code": "teiet210", "geo": "EA21",
+                                      "filters": "partner=EXT_EA21&stk_flow=BAL_RT&sitc06=TOTAL&unit=TVAL_SA"},
     ("HU", "ppi"):                   {"dataset_code": "sts_inpp_m", "geo": "HU",
                                       "filters": "unit=PCH_SM&nace_r2=B-E36&s_adj=NSA&indic_bt=PRC_PRR"},
+    ("HU", "retail_trade"):          {"dataset_code": "sts_trtu_m", "geo": "HU",
+                                      "filters": "unit=PCH_SM&nace_r2=G47&s_adj=CA&indic_bt=VOL_SLS"},
+    ("HU", "industrial_production"): {"dataset_code": "sts_inpr_m", "geo": "HU",
+                                      "filters": "unit=PCH_SM&nace_r2=B-D&s_adj=CA&indic_bt=PRD"},
+    # ⚠️ `na_item=GD` KOTELEZO: nelkule 28.4 jott vissza "friss"-kent, a valos
+    # 77.7% helyett. Egy masik szelet, ami ugyanugy szamnak latszik.
+    ("HU", "gov_debt"):              {"dataset_code": "gov_10q_ggdebt", "geo": "HU",
+                                      "filters": "unit=PC_GDP&sector=S13&na_item=GD"},
+    ("HU", "house_prices"):          {"dataset_code": "prc_hpi_q", "geo": "HU",
+                                      "filters": "unit=RCH_A&purchase=TOTAL"},
+    ("HU", "wages"):                 {"dataset_code": "lc_lci_r2_q", "geo": "HU",
+                                      "filters": "unit=PCH_SM&nace_r2=B-S&lcstruct=D11&s_adj=NSA"},
+    ("HU", "trade_balance"):         {"dataset_code": "teiet215", "geo": "HU",
+                                      "filters": "partner=WORLD&stk_flow=BAL_RT&bclas_bec=TOTAL&indic_et=TRD_VAL_SCA"},
+    # GDP-KOMPONENSEK: `CLV15_MEUR` (SZINT, millio EUR) helyett `CLV_PCH_SM`
+    # (eves valtozas %). A szint egy briefben hasznalhatatlan — es a modell
+    # novekedesnek olvassa.
+    ("HU", "gdp_consumption"):       {"dataset_code": "namq_10_gdp", "geo": "HU",
+                                      "filters": "na_item=P31_S14&unit=CLV_PCH_SM&s_adj=SCA"},
+    ("HU", "gdp_investment"):        {"dataset_code": "namq_10_gdp", "geo": "HU",
+                                      "filters": "na_item=P51G&unit=CLV_PCH_SM&s_adj=SCA"},
+    ("HU", "gdp_exports"):           {"dataset_code": "namq_10_gdp", "geo": "HU",
+                                      "filters": "na_item=P6&unit=CLV_PCH_SM&s_adj=SCA"},
+    ("HU", "gdp_imports"):           {"dataset_code": "namq_10_gdp", "geo": "HU",
+                                      "filters": "na_item=P7&unit=CLV_PCH_SM&s_adj=SCA"},
+    ("HU", "gdp_government"):        {"dataset_code": "namq_10_gdp", "geo": "HU",
+                                      "filters": "na_item=P3_S13&unit=CLV_PCH_SM&s_adj=SCA"},
 }
 for _k, _a in _EUROSTAT_STS.items():
     _sp = {"type": "eurostat", **_a}
@@ -7267,7 +7406,12 @@ async def get_macro_indicator(
     Args:
         country: ISO-2 country code (HU, DE, FR, IT, ES, EA, US, GB, ...).
                  EA = euro area aggregate (uses ECB U2 / Eurostat EA20).
-        period: Optional. Ask for a SPECIFIC period ("2026-03", "2026-Q2")
+        period: Optional. KOTELEZO FORMATUM: "YYYY-MM" NULLAZOTT honappal
+                ("2026-03", NEM "2026-3") vagy "YYYY-Qn" ("2026-Q2"). Rossz
+                formatum vagy nem letezo idoszak eseten a valasz
+                status="missing" — ez NEM azt jelenti, hogy az adat hianyzik:
+                hivd ujra `period` nelkul.
+                Ask for a SPECIFIC period ("2026-03", "2026-Q2")
                 instead of the latest value. Searched in each resolver's
                 `time_series` — the Eurostat press-release table carries the
                 last ~7 months, the structured series go back years. Returns
@@ -7275,6 +7419,18 @@ async def get_macro_indicator(
         indicator: One of:
                    "cpi"             — headline HICP annual rate of change (%)
                    "core_cpi"        — core HICP (excl. energy & food), YoY%
+        ⚠️ AZ EGYSEG NEM EGYSEGES, ES A VALASZBAN NINCS `unit` MEZO.
+           %-KENT csak ezek idezhetok: cpi, core_cpi, services_cpi, energy_cpi,
+           food_cpi, ppi, unemployment, policy_rate, gdp_growth, gov_debt,
+           house_prices, bond_yield_10y, wages(EU), retail_trade,
+           industrial_production.
+           SZINTET adnak (NEM %): `gdp` (millio EUR CLV15), `trade_balance`
+           (millio EUR), es a `wages` US-re (USD/ora, pl. 37.62 — ez NEM 37,6%).
+           Ha bizonytalan vagy, a `source_used` mezobol allapitsd meg, es
+           inkabb ne ird le szazalekkent.
+        ⚠️ NEVUTKOZES a `forecast` toollal: forecast(indicator="gdp") = eves
+           GDP-NOVEKEDES %, get_macro_indicator(indicator="gdp") = GDP SZINT,
+           get_macro_indicator(indicator="gdp_growth") = negyedev/negyedev %.
                    "services_cpi"    — HICP services component, YoY%
                    "energy_cpi"      — HICP energy component, YoY%
                    "food_cpi"        — HICP food component, YoY%
@@ -7326,6 +7482,7 @@ async def get_macro_indicator(
     # A kert idoszakot KULON nevben tartjuk: a hurokban a `period` valtozo a
     # resolver ALTAL adott idoszak, es felulirodna.
     want_period = (period or "").strip()
+    _rate_limited: list[str] = []      # mely resolvereket fojtottak meg
     attempts: list[dict] = []
     best_stale: Optional[dict] = None  # freshest stale value found across the chain
 
@@ -7346,7 +7503,18 @@ async def get_macro_indicator(
             attempts.append({"resolver": rtype, "outcome": "error", "error": str(e)[:200]})
             continue
         if not result or result.get("value") is None:
-            attempts.append({"resolver": rtype, "outcome": "empty"})
+            # ⚠️ FOJTVA != NINCS ADAT. Merve 2026-08-30: parhuzamos auditok
+            # alatt a FRED HTTP 429-et adott, a lanc vegigesett, es a valasz
+            # `status="missing"` lett — mintha az adat nem letezne. Pedig
+            # letezik, csak minket korlatoztak. Egy brief ebbol azt irna, hogy
+            # "a Fed alapkamat nem elerheto", ami hamis allitas a vilagrol.
+            _ok = str((result or {}).get("_error") or (result or {}).get("error") or "")
+            _fojtva = "429" in _ok or "rate limit" in _ok.lower()
+            attempts.append({"resolver": rtype,
+                             "outcome": "rate_limited" if _fojtva else "empty",
+                             **({"detail": _ok[:120]} if _ok else {})})
+            if _fojtva:
+                _rate_limited.append(rtype)
             continue
         # HIHETOSEGI KAPU: a rossz MERTEKEGYSEG nem kevesbe karos, mint a
         # hianyzo adat — csak nehezebb eszrevenni. Tovabbmegyunk a lancon.
