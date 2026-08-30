@@ -1,4 +1,9 @@
-mcp>=1.20.0
+# ⚠️ FELSO KORLAT KOTELEZO: az `mcp` 2.x-ben a FastMCP-t MCPServer-re
+# neveztek at (`mcp.server.fastmcp` megszunt), es a `server.py` v1 API-t
+# hasznal. A korlat nelkuli `mcp>=1.20.0` miatt az ELSO ujraepites
+# osszeomlott: ModuleNotFoundError a boot elso masodperceben
+# (2026-08-30). Boot-kritikus lancra mindig kell felso korlat.
+mcp>=1.20.0,<2
 httpx>=0.27.0
 uvicorn>=0.30.0
 yfinance>=0.2.0
