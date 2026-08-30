@@ -4385,6 +4385,68 @@ _UNIT_OVERRIDE: dict[tuple[str, str], tuple[str, str]] = {
 }
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# AMIT EGY GYENGEBB MODELL IRNA — FOGADJUK EL
+# ══════════════════════════════════════════════════════════════════════════
+#
+# MIERT (Kommandant, 2026-08-30): "NALAD BUTABB AGENTEKNEK IS HASZNALHATONAK
+# KELL LENNIE." Merve ugyanaznap: `indicator="inflation"` — a legtermeszetesebb
+# szo — "No resolver chain"-t adott. Egy erosebb modell ebbol kitalalja, hogy
+# "cpi" kell; egy gyengebb feladja, vagy ami rosszabb, KITALAL egy szamot.
+#
+# Egy eszkoz akkor jo, ha azt is megerti, amit a hivo TERMESZETESEN ir — nem
+# az a hivo dolga, hogy a mi belso nevkonvenciunkat kitalalja.
+_INDICATOR_ALIAS: dict[str, str] = {
+    "inflation": "cpi", "inflation_rate": "cpi", "hicp_rate": "cpi",
+    "consumer_prices": "cpi", "cpi_yoy": "cpi", "arindex": "cpi",
+    "core_inflation": "core_cpi", "core": "core_cpi", "maginflacio": "core_cpi",
+    "interest_rate": "policy_rate", "base_rate": "policy_rate",
+    "alapkamat": "policy_rate", "central_bank_rate": "policy_rate",
+    "key_rate": "policy_rate", "rate": "policy_rate",
+    "unemployment_rate": "unemployment", "jobless_rate": "unemployment",
+    "munkanelkuliseg": "unemployment",
+    "gdp_growth_rate": "gdp_growth", "growth": "gdp_growth",
+    "real_gdp_growth": "gdp_growth", "gdp_yoy": "gdp_growth",
+    "bond_yield": "bond_yield_10y", "yield_10y": "bond_yield_10y",
+    "10y": "bond_yield_10y", "government_bond": "bond_yield_10y",
+    "producer_prices": "ppi", "ppi_yoy": "ppi",
+    "wage_growth": "wages", "earnings": "wages", "berek": "wages",
+    "debt": "gov_debt", "government_debt": "gov_debt", "allamadossag": "gov_debt",
+    "house_price_index": "house_prices", "property_prices": "house_prices",
+    "retail_sales": "retail_trade", "industrial_output": "industrial_production",
+    "trade": "trade_balance",
+}
+
+
+def _normalize_indicator(ind: str) -> str:
+    """A hivo altal irt nev → a belso nev. Sose dob."""
+    k = (ind or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return _INDICATOR_ALIAS.get(k, k)
+
+
+def _normalize_period(per: str) -> str:
+    """Lazan irt idoszak → kanonikus alak. "2026-3" → "2026-03", "2026q2" → "2026-Q2".
+
+    MERVE: a `period="2026-3"` (nullazatlan honap) `status="missing"`-et adott,
+    ES a hibauzenet a BRAVE_MCP_URL-rol beszelt — egy gyengebb modell ebbol
+    "nincs adat"-ot ir. A formatum a MI dolgunk, ne a hivoe.
+    """
+    t = (per or "").strip().upper().replace("/", "-").replace(" ", "")
+    if not t:
+        return ""
+    import re as _re
+    m = _re.fullmatch(r"(\d{4})-?Q([1-4])", t)
+    if m:
+        return f"{m.group(1)}-Q{m.group(2)}"
+    m = _re.fullmatch(r"(\d{4})-?(\d{1,2})", t)
+    if m and 1 <= int(m.group(2)) <= 12:
+        return f"{m.group(1)}-{int(m.group(2)):02d}"
+    m = _re.fullmatch(r"(\d{4})", t)
+    if m:
+        return t
+    return per.strip()
+
+
 def _unit_of(country: str, indicator: str) -> tuple[str, str]:
     """(unit, unit_kind) — sose dob; ismeretlenre oszinten "unknown"."""
     ov = _UNIT_OVERRIDE.get((country, indicator))
@@ -5742,8 +5804,12 @@ INDICATOR_RESOLVERS[("HU", "cpi")] = [
     {"type": "ecb",          "dataset": "ICP", "key": "M.HU.N.000000.4.ANR"},
     {"type": "eurostat",     "dataset_code": "prc_hicp_manr", "geo": "HU"},
     # OECD CPI alternatív forrás — HU/M monthly headline %change YoY
+    # ⚠️ A KULCS SORRENDJE: REF_AREA ELOL, azutan FREQ. A "M.HUN.N..." alak
+    # NEM JSON-t ad vissza, hanem hibat — merve 2026-08-30. A helyes alak
+    # "HUN.M.N...". Ez a resolver igy ketszeresen volt halott: rossz kulccsal
+    # ES rossz JSON-ertelmezovel.
     {"type": "oecd",         "agency": "OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0",
-                              "key":    "M.HUN.N.CPI.PA._T.N.GY"},
+                              "key":    "HUN.M.N.CPI.PA._T.N.GY"},
     {"type": "brave_search", "query": "Eurostat HICP Hungary {YYYY-MM} annual inflation rate",
                               "site": "ec.europa.eu",
                               "rx": r"Hungary[\s\S]{0,300}?(\d+[,.]\d)\s*%"},
@@ -7100,6 +7166,25 @@ for _k, _a in _DBNOMICS_NEMZETI.items():
     _m = INDICATOR_RESOLVERS.get(_k)
     INDICATOR_RESOLVERS[_k] = ([_sp] + _m) if _m else [_sp]
 
+# ── OECD DIREKT: ahol se az Eurostat, se a nemzeti hivatal nem eleg ────────
+# CA/cpi: a dbnomics STATCAN-providereben CPI NINCS (192 dataset kozott sem),
+# a BOC-nak egyetlen datasetje van, az OECD-tukor 2026-04-nel all, a WB GEM
+# 2024-nel, az IMF 2025-06-nal. Csak az OECD DIREKT friss — merve 3.03 @
+# 2026-07. A `unit_kind` itt "rate", tehat a hihetosegi kapu is vedi.
+INDICATOR_RESOLVERS[("CA", "cpi")] = [
+    {"type": "oecd", "agency": "OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0",
+                     "key": "CAN.M.N.CPI.PA._T.N.GY"},
+] + (INDICATOR_RESOLVERS.get(("CA", "cpi")) or [])
+
+# ── BIS DIREKT: jegybanki alapkamatok, ahol a tukor kesik ─────────────────
+# Merve 2026-08-30 EGY hivasbol: JP 1.0 · CA 2.25 · AU 4.35 · GB 3.75 ·
+# XM (EKB) 2.25 · HU 5.75 — mind 2026-07. A dbnomics-tukor ugyanerre
+# 2025-osoket ad.
+for _cc, _bis in (("JP", "JP"), ("CA", "CA"), ("AU", "AU"), ("GB", "GB")):
+    _k = (_cc, "policy_rate")
+    _sp = {"type": "bis_direct", "area": _bis}
+    INDICATOR_RESOLVERS[_k] = [_sp] + (INDICATOR_RESOLVERS.get(_k) or [])
+
 # Component-label mapping: indicator → markdown bold label in press release
 _EUROSTAT_PRESS_LABELS: dict[str, str] = {
     "cpi":           "All-items HICP",
@@ -7474,6 +7559,90 @@ async def _resolver_dbnomics(spec: dict) -> Optional[dict]:
     }
 
 
+def _parse_sdmx_json(d: dict) -> list[tuple[str, float]]:
+    """SDMX-JSON 2.0 → [(idoszak, ertek)], IDOSZAK SZERINT NOVEKVO. Sose dob.
+
+    EGY ERTELMEZO KET SZOLGALTATORA. Az OECD es a BIS ugyanazt a szabvanyt
+    adja, de aprosagokban elter, es mindharom elteres CSENDES hibat okozott:
+      * a torzs `data.dataSets` alatt van (OECD) vagy a gyokerben (BIS),
+      * `structures` (lista) vagy `structure` (egyes szam),
+      * az idorend NEM garantalt: az OECD LEGUJABB-ELOL adja
+        (['2025-12','2025-11','2025-10']), a BIS legregebbi-elol
+        (['2026-06','2026-07']). Aki indexre hagyatkozik, felvaltva kapja a
+        legfrissebbet es a legregebbit.
+      * a BIS az ERTEKEKET STRINGKENT adja ('1'), az OECD szamkent (3.3).
+    Ezert: idoszak szerint rendezunk, es mindent float-ra kenyszeritunk.
+    """
+    try:
+        body = d.get("data") if isinstance(d.get("data"), dict) else d
+        datasets = body.get("dataSets") or []
+        structures = body.get("structures") or (
+            [body["structure"]] if body.get("structure") else [])
+        if not datasets or not structures:
+            return []
+        idoszakok: list[str] = []
+        for od in (structures[0].get("dimensions") or {}).get("observation") or []:
+            if str(od.get("id", "")).upper() in ("TIME_PERIOD", "TIME"):
+                idoszakok = [str(v.get("id") or v.get("name")) for v in (od.get("values") or [])]
+                break
+        if not idoszakok:
+            return []
+        series = datasets[0].get("series") or {}
+        if not series:
+            return []
+        sorozat = next(iter(series.values()))
+        parok: list[tuple[str, float]] = []
+        for idx, ertek in (sorozat.get("observations") or {}).items():
+            try:
+                i = int(idx)
+            except (TypeError, ValueError):
+                continue
+            if i >= len(idoszakok):
+                continue
+            v = ertek[0] if isinstance(ertek, (list, tuple)) and ertek else ertek
+            if v is None:
+                continue
+            try:
+                parok.append((idoszakok[i], float(v)))
+            except (TypeError, ValueError):
+                continue
+        parok.sort(key=lambda x: x[0])
+        return parok
+    except Exception:  # noqa: BLE001 — egy ertelmezo sose vigye el a lancot
+        return []
+
+
+async def _resolver_bis_direct(spec: dict) -> Optional[dict]:
+    """Resolver: BIS SDMX DIREKT (stats.bis.org), NEM a dbnomics-tukron at.
+
+    ⚠️ MIERT DIREKT: a dbnomics BIS-tukre 14 HONAPOT KESIK. Merve 2026-08-30
+    ugyanarra a sorozatra (BIS/WS_CBPOL/M.JP): tukor 0.5 @ 2025-06, direkt
+    1.0 @ 2026-07. Egy jegybanki alapkamat 14 honapos keses mellett nem adat,
+    hanem tortenelem — es semmi nem jelezte, hogy elavult.
+    """
+    orszag = spec.get("area", "")
+    url = f"https://stats.bis.org/api/v2/data/dataflow/BIS/WS_CBPOL/1.0/M.{orszag}"
+    client = await get_client()
+    try:
+        r = await client.get(url, params={"lastNObservations": 6, "format": "jsondata"},
+                             headers={"Accept": "application/vnd.sdmx.data+json;version=1.0.0"},
+                             timeout=25.0)
+        if r.status_code != 200:
+            return None
+        parok = _parse_sdmx_json(r.json())
+    except Exception:
+        return None
+    if not parok:
+        return None
+    per, val = parok[-1]
+    return {
+        "value": val,
+        "period": per,
+        "source": f"BIS WS_CBPOL direct ({orszag})",
+        "time_series": [{"period": p_, "value": v_} for p_, v_ in parok],
+    }
+
+
 async def _resolver_oecd(spec: dict) -> Optional[dict]:
     """Resolver: OECD SDMX direct query.
 
@@ -7500,19 +7669,18 @@ async def _resolver_oecd(spec: dict) -> Optional[dict]:
     except Exception:
         return None
 
-    # OECD SDMX-JSON has same shape as ECB — reuse _parse_ecb_jsondata
-    try:
-        parsed = _parse_ecb_jsondata(d)
-    except Exception:
+    # A kozos SDMX-ertelmezo. Lasd `_parse_sdmx_json` — harom csendes hiba
+    # volt itt: rossz JSON-alak, hianyzo TIME_PERIOD-olvasas, es LEGUJABB-ELOL
+    # sorrend (az `obs[-1]` a LEGREGEBBIT vette).
+    parok = _parse_sdmx_json(d)
+    if not parok:
         return None
-    obs = parsed.get("observations") or []
-    if not obs:
-        return None
-    latest = obs[-1]
+    per, val = parok[-1]
     return {
-        "value": latest.get("value"),
-        "period": latest.get("period"),
+        "value": val,
+        "period": per,
         "source": f"OECD SDMX {agency.split(',')[1].split('@')[0] if '@' in agency else agency}",
+        "time_series": [{"period": p_, "value": v_} for p_, v_ in parok],
     }
 
 
@@ -7542,6 +7710,7 @@ _RESOLVERS = {
     "fred_range": _resolver_fred_range,
     "dbnomics": _resolver_dbnomics,
     "oecd": _resolver_oecd,
+    "bis_direct": _resolver_bis_direct,
     "ksh_stadat": _resolver_ksh_stadat,
     "ksh_flash": _resolver_ksh_flash,
     "scrape": _resolver_scrape,
@@ -7632,22 +7801,37 @@ async def get_macro_indicator(
           → FRED UNRATE → 3.9 (2026-03), source: FRED
     """
     country = country.strip().upper()
-    indicator = indicator.strip().lower()
+    _eredeti_ind = indicator
+    indicator = _normalize_indicator(indicator)
     chain = INDICATOR_RESOLVERS.get((country, indicator))
     if not chain:
-        valid_countries = sorted({c for c, _ in INDICATOR_RESOLVERS})
-        valid_indicators = sorted({i for _, i in INDICATOR_RESOLVERS})
+        # ⚠️ A HIBAUZENET MONDJA MEG, MIT TEGYEN — NE A HIVO TALALGASSON.
+        # A regi valasz `valid_countries` + `valid_indicators` listat adott,
+        # KULON-KULON. Egy gyengebb modell ebbol azt hiszi, hogy barmelyik
+        # ketto kombinalhato — pedig a parok NEM teljes matrixot alkotnak.
+        # Most azt mondjuk meg, ami ehhez az ORSZAGHOZ tenylegesen letezik.
+        ehhez_az_orszaghoz = sorted({i for c, i in INDICATOR_RESOLVERS if c == country})
+        ehhez_a_mutatohoz = sorted({c for c, i in INDICATOR_RESOLVERS if i == indicator})
         return json.dumps({
-            "error": f"No resolver chain for ({country!r}, {indicator!r}).",
-            "valid_countries": valid_countries,
-            "valid_indicators": valid_indicators,
-            "hint": "Extend INDICATOR_RESOLVERS in server.py to support this combo.",
+            "error": f"Nincs ({country}, {indicator}) par a resolver-lancban.",
+            "requested": {"country": country, "indicator": _eredeti_ind,
+                          "normalized_indicator": indicator},
+            "available_for_this_country": ehhez_az_orszaghoz,
+            "countries_with_this_indicator": ehhez_a_mutatohoz,
+            "agent_instruction": (
+                f"NE talalj ki erteket es NE ird azt, hogy az adat nem letezik. "
+                f"Ket lehetoseged van: (1) valassz az "
+                f"`available_for_this_country` listabol, ha az is megvalaszolja a "
+                f"kerdest; (2) ha ez a konkret mennyiseg kell, hivd a nyers "
+                f"forrast: get_eurostat_data / get_ecb_data / get_fred_data / "
+                f"get_ksh_stadat. A `statdata_help` megmondja, melyik mihez valo."
+            ),
         }, ensure_ascii=False, indent=2)
 
     threshold = freshness_days if freshness_days > 0 else _FRESHNESS_DAYS.get(indicator, 90)
     # A kert idoszakot KULON nevben tartjuk: a hurokban a `period` valtozo a
     # resolver ALTAL adott idoszak, es felulirodna.
-    want_period = (period or "").strip()
+    want_period = _normalize_period(period)
     _rate_limited: list[str] = []      # mely resolvereket fojtottak meg
     attempts: list[dict] = []
     best_stale: Optional[dict] = None  # freshest stale value found across the chain
@@ -7715,10 +7899,16 @@ async def get_macro_indicator(
             })
             if hit is None:
                 continue
+            _hu, _huk = _unit_of(country, indicator)
             return json.dumps({
                 "country": country,
                 "indicator": indicator,
                 "value": hit["value"],
+                # Az egyseg a VISSZAMENOLEGES again is kell: egy gyengebb
+                # modell nem tudja kitalalni, es a `unit_kind: None` pont
+                # olyan, mintha nem lenne.
+                "unit": _hu,
+                "unit_kind": _huk,
                 "period": want_period,
                 "status": "historical",
                 "requested_period": want_period,
@@ -7849,9 +8039,19 @@ async def get_macro_indicator(
         "fallback_chain": [a["resolver"] for a in attempts],
         "all_attempts": attempts,
         "error": (
-            f"No resolver returned data for ({country}, {indicator}). "
-            "Check that BRAVE_MCP_URL is set for scrape/search fallbacks, "
-            "or extend the resolver chain."
+            f"Egyetlen forras sem adott adatot erre: ({country}, {indicator})"
+            + (f", idoszak: {want_period}" if want_period else "") + "."
+        ),
+        "agent_instruction": (
+            (f"KERT IDOSZAK: {want_period}. Ha ez REGEBBI, mint amit a "
+             f"forrasok tartanak, hivd ujra `period` NELKUL — akkor a "
+             f"legfrissebbet kapod. A formatum \"YYYY-MM\" vagy \"YYYY-Qn\"."
+             if want_period else
+             "Probald meg a nyers forrast (get_eurostat_data / get_ecb_data / "
+             "get_fred_data / get_ksh_stadat), vagy a `get_flash_releases`-t a "
+             "legfrissebb publikaciohoz.")
+            + " NE ird azt, hogy az adat nem letezik — azt ez a valasz NEM "
+              "allitja; csak annyit, hogy MI nem talaltuk meg."
         ),
     }, ensure_ascii=False, indent=2)
 
