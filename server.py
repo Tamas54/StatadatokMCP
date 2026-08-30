@@ -4279,6 +4279,66 @@ _PLAUSIBLE_RANGE: dict[str, tuple[float, float]] = {
 }
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# MERTEKEGYSEG — A VALASZ MONDJA MEG, NE A HIVO TALALJA KI
+# ══════════════════════════════════════════════════════════════════════════
+#
+# MIERT (Kommandant, 2026-08-30): "az alapadatok megkeresese ma mar egy Google
+# kereses, az AI eredmeny azonnal megjon — ez az eszkoz akkor ad tobbet, ha
+# BIZTOSAN megbizhato, friss, es sokkal tobb adatot tud strukturaltan."
+#
+# Egy szam, aminek a hivo nem tudja az EGYSEGET, nem megbizhatobb egy talalati
+# listanal — csak lassabb. Es a tevedes nem elmeleti: ma merve a `US/wages`
+# 37.62-t ad (USD/ORA SZINT), amit egy modell konnyen "37,6%"-kent ir le; a
+# `HU/gdp` 36376.0-t (millio EUR), amibol "36 376 milliard" lesz.
+#
+# Ezert minden valasz kap `unit` es `unit_kind` mezot. `unit_kind` haromfele:
+#   "rate"  — eves/idoszaki valtozas %-ban, ez idezheto szazalekkent
+#   "level" — szint sajat mertekegysegben (EUR M, USD/ora) — SOSE %-kent
+#   "index" — indexszint (2015=100) — sose %-kent, es sose szintkent
+_INDICATOR_UNIT: dict[str, tuple[str, str]] = {
+    "cpi":                   ("annual % change (YoY)", "rate"),
+    "hicp":                  ("annual % change (YoY)", "rate"),
+    "core_cpi":              ("annual % change (YoY)", "rate"),
+    "services_cpi":          ("annual % change (YoY)", "rate"),
+    "energy_cpi":            ("annual % change (YoY)", "rate"),
+    "food_cpi":              ("annual % change (YoY)", "rate"),
+    "ppi":                   ("annual % change (YoY)", "rate"),
+    "wages":                 ("annual % change (YoY)", "rate"),
+    "retail_trade":          ("annual % change (YoY)", "rate"),
+    "industrial_production": ("annual % change (YoY)", "rate"),
+    "house_prices":          ("annual % change (YoY)", "rate"),
+    "unemployment":          ("% of labour force", "rate"),
+    "policy_rate":           ("% per annum", "rate"),
+    "bond_yield_10y":        ("% per annum", "rate"),
+    "gov_debt":              ("% of GDP", "rate"),
+    "gdp_growth":            ("% change (see source for QoQ vs YoY)", "rate"),
+    "gdp_consumption":       ("annual % change (YoY)", "rate"),
+    "gdp_investment":        ("annual % change (YoY)", "rate"),
+    "gdp_exports":           ("annual % change (YoY)", "rate"),
+    "gdp_imports":           ("annual % change (YoY)", "rate"),
+    "gdp_government":        ("annual % change (YoY)", "rate"),
+    # ── SZINTEK: ezeket SOSE szabad %-kent idezni ─────────────────────────
+    "gdp":                   ("EUR million, chain-linked volumes (LEVEL)", "level"),
+    "trade_balance":         ("EUR million, seasonally adjusted (LEVEL)", "level"),
+    "oecd_cli":              ("index, long-term average = 100", "index"),
+}
+
+#: Ahol egy (orszag, indikator) par elter az altalanostol. Merve: a FRED
+#: `CES0500000003` sorozat USD/ORAT ad, nem szazalekot.
+_UNIT_OVERRIDE: dict[tuple[str, str], tuple[str, str]] = {
+    ("US", "wages"): ("USD per hour (LEVEL, not a percentage)", "level"),
+}
+
+
+def _unit_of(country: str, indicator: str) -> tuple[str, str]:
+    """(unit, unit_kind) — sose dob; ismeretlenre oszinten "unknown"."""
+    ov = _UNIT_OVERRIDE.get((country, indicator))
+    if ov:
+        return ov
+    return _INDICATOR_UNIT.get(indicator, ("unknown — check source_used", "unknown"))
+
+
 def _implausible(indicator: str, value) -> str:
     """"" ha rendben; kulonben az elutasitas EMBERI indoka."""
     rng = _PLAUSIBLE_RANGE.get(indicator)
@@ -6956,6 +7016,36 @@ for _k, _sid in ((("JP", "policy_rate"), "IRSTCI01JPM156N"),
     _m = INDICATOR_RESOLVERS.get(_k)
     INDICATOR_RESOLVERS[_k] = ([_sp] + _m) if _m else [_sp]
 
+# ══════════════════════════════════════════════════════════════════════════
+# NEM-EU ORSZAGOK — NEMZETI HIVATALOK, DBNOMICS-ON AT
+# ══════════════════════════════════════════════════════════════════════════
+#
+# MERT: GB/JP/CA/AU inflaciora a FRED nemzetkozi (OECD-forrasu) sorozatai
+# 2025-osek vagy halottak, a web-kereses pedig indexszintet adott (CA 221.0).
+# A NEMZETI HIVATALOK viszont frissek, es a dbnomics proxyzza oket. Mind
+# merve 2026-08-30:
+#     GB/cpi      ONS MM23 D7G7.M   2.9 @ 2026-07  (fejlec-CPI eves rata)
+#     GB/core_cpi ONS MM23 DKO8.M   2.6 @ 2026-07
+#     GB/gdp      ONS PN2  IHYR.Q   1.2 @ 2026-Q2  (⚠️ PN2, NEM QNA: az utobbi
+#                                    2026-Q1-nel all)
+#     AU/cpi      RBA G4   GCPIAGYPM 3.5 @ 2026-07
+#     AU/unemp    RBA H5   GLFSURSA  4.46 @ 2026-07 (egy honappal FRISSEBB,
+#                                    mint a jelenlegi FRED-sor)
+#
+# ⚠️ GB-re az ONS a helyes forras, NEM az OECD: az OECD GBR-sorozata
+# kovetkezetesen ~0,2pp-tal magasabb (CPIH-jellegu mero), tehat mas mennyiseg.
+_DBNOMICS_NEMZETI: dict[tuple[str, str], dict] = {
+    ("GB", "cpi"):          {"provider_code": "ONS", "dataset_code": "MM23", "series_code": "D7G7.M"},
+    ("GB", "core_cpi"):     {"provider_code": "ONS", "dataset_code": "MM23", "series_code": "DKO8.M"},
+    ("GB", "gdp_growth"):   {"provider_code": "ONS", "dataset_code": "PN2", "series_code": "IHYR.Q"},
+    ("AU", "cpi"):          {"provider_code": "RBA", "dataset_code": "G4", "series_code": "GCPIAGYPM"},
+    ("AU", "unemployment"): {"provider_code": "RBA", "dataset_code": "H5", "series_code": "GLFSURSA"},
+}
+for _k, _a in _DBNOMICS_NEMZETI.items():
+    _sp = {"type": "dbnomics", **_a}
+    _m = INDICATOR_RESOLVERS.get(_k)
+    INDICATOR_RESOLVERS[_k] = ([_sp] + _m) if _m else [_sp]
+
 # Component-label mapping: indicator → markdown bold label in press release
 _EUROSTAT_PRESS_LABELS: dict[str, str] = {
     "cpi":           "All-items HICP",
@@ -7252,7 +7342,12 @@ async def _resolver_dbnomics(spec: dict) -> Optional[dict]:
         "provider_code": spec["provider_code"],
         "dataset_code": spec["dataset_code"],
         "series_code": spec.get("series_code", ""),
-        "max_obs": 24 if spec.get("compute_yoy") else 6,
+        # ⚠️ NEM `max_obs`: a `dbnomics_series` ilyen parametert NEM ismer, es a
+        # TypeError MINDEN `type:"dbnomics"` resolvert megolte — merve
+        # 2026-08-30: "dbnomics_series() got an unexpected keyword argument
+        # 'max_obs'". A resolver-tipus EGY EVE halott lehetett, es senki nem
+        # vette eszre, mert a lanc csendben tovabbesett a kovetkezore.
+        "limit": 24 if spec.get("compute_yoy") else 6,
     }
     raw = await dbnomics_series(**{k: v for k, v in args.items() if v})
     try:
@@ -7267,7 +7362,24 @@ async def _resolver_dbnomics(spec: dict) -> Optional[dict]:
     if not obs:
         return None
     # observations is list of {period, value}
-    obs = [o for o in obs if o.get("value") is not None]
+    # ⚠️ NEM ELEG az `is not None`. Az RBA-sorozatok a JOVOBELI idoszakokra
+    # `"NA"` STRINGET adnak (merve: RBA/G4/GCPIAGYPM utolso tetelei
+    # 2026-08-31-tol 2027-ig mind "NA"). Az a resolver szamara "ertek" lett
+    # volna, es egy JOVOBELI idoszakot adott volna vissza frissnek.
+    _szam = []
+    for o in obs:
+        v = o.get("value")
+        if isinstance(v, bool) or v is None:
+            continue
+        if isinstance(v, (int, float)):
+            _szam.append(o)
+        else:
+            try:
+                o = {**o, "value": float(str(v).replace(",", "."))}
+                _szam.append(o)
+            except (TypeError, ValueError):
+                continue          # "NA", "..", ".", ures
+    obs = _szam
     if not obs:
         return None
     obs.sort(key=lambda o: str(o.get("period", "")))
@@ -7509,7 +7621,9 @@ async def get_macro_indicator(
             # letezik, csak minket korlatoztak. Egy brief ebbol azt irna, hogy
             # "a Fed alapkamat nem elerheto", ami hamis allitas a vilagrol.
             _ok = str((result or {}).get("_error") or (result or {}).get("error") or "")
-            _fojtva = "429" in _ok or "rate limit" in _ok.lower()
+            _low = _ok.lower()
+            _fojtva = ("429" in _ok or "403" in _ok or "rate limit" in _low
+                       or "access denied" in _low or "too many" in _low)
             attempts.append({"resolver": rtype,
                              "outcome": "rate_limited" if _fojtva else "empty",
                              **({"detail": _ok[:120]} if _ok else {})})
@@ -7587,10 +7701,13 @@ async def get_macro_indicator(
                         "módszertani törést jelölj."
                     )
 
+            _u, _uk = _unit_of(country, indicator)
             out_payload = {
                 "country": country,
                 "indicator": indicator,
                 "value": result["value"],
+                "unit": _u,
+                "unit_kind": _uk,           # rate | level | index | unknown
                 "period": period,
                 "status": "fresh",
                 "source_used": result.get("source", rtype),
@@ -8154,10 +8271,99 @@ async def landing_page(request):
     return HTMLResponse(html)
 
 
+@mcp.tool()
+async def get_macro_panel(
+    countries: str,
+    indicators: str,
+    period: str = "",
+) -> str:
+    """TÖBBFÉLE makró-adat EGY hívásban, ország × mutató mátrixban.
+
+    MIÉRT LÉTEZIK EZ A TOOL. Egyetlen szám lekérése ma ingyen van: egy kereső
+    AI-válasza azonnal megjön. Ez a szolgáltatás nem attól ér többet, hogy
+    MEGADJA a számot, hanem attól, hogy olyat ad, amire ÉPÍTENI lehet:
+    ellenőrizhető forrással, kimondott mértékegységgel, és sok különböző
+    fajta adatot EGYSÉGES szerkezetben. Egy keresődoboz egyszerre egy választ
+    ad, ellenőrizhetetlen alakban — ezt a toolt nem tudja utánozni.
+
+    Args:
+        countries: vesszős lista, ISO-2 ("HU,EA,US" vagy "HU,DE,AT,SK,PL,CZ").
+                   30+ európai ország HICP-je elérhető.
+        indicators: vesszős lista ("cpi,core_cpi,unemployment,policy_rate").
+                    Ugyanazok a nevek, mint a `get_macro_indicator`-ban.
+        period: opcionális, KÖTELEZŐ FORMÁTUM "YYYY-MM" nullázva ("2026-03")
+                vagy "YYYY-Qn". Üresen a legfrissebbet adja mutatónként.
+
+    Returns:
+        JSON: `rows` — cellánként egy sor {country, indicator, value, unit,
+        unit_kind, period, status, source_used}. Minden cella HORDOZZA a
+        forrását és az egységét: két cella jöhet két külön forrásból, más
+        időszakkal, és ezt nem szabad elfedni.
+        `gaps` — amire NINCS adat, cellánként okkal. A hiányt kimondjuk,
+        nem hagyjuk ki csendben: egy üres cella és egy nem létező cella nem
+        ugyanaz.
+        `summary` — hány cella kért/megvan/hiányzik.
+
+    ⚠️ A `unit_kind` MEZŐT NÉZD MEG cellánként. Egy panelben keveredhet
+    "rate" (%-ként idézhető) és "level" (millió EUR, USD/óra — SOSE %-ként).
+    """
+    cc_list = [c.strip().upper() for c in (countries or "").split(",") if c.strip()]
+    ind_list = [i.strip().lower() for i in (indicators or "").split(",") if i.strip()]
+    if not cc_list or not ind_list:
+        return json.dumps({"error": "countries és indicators is kell",
+                           "example": {"countries": "HU,EA,US",
+                                       "indicators": "cpi,core_cpi,unemployment"}},
+                          ensure_ascii=False, indent=2)
+    if len(cc_list) * len(ind_list) > 120:
+        return json.dumps({
+            "error": f"{len(cc_list)}×{len(ind_list)} = {len(cc_list)*len(ind_list)} cella "
+                     f"túl sok (max 120)",
+            "hint": "Bontsd több hívásra. A korlát nem önkényes: minden cella "
+                    "külön külső lekérés, és a forrásoknál (FRED, Eurostat) "
+                    "rate limit van — mérve 2026-08-30, HTTP 429.",
+        }, ensure_ascii=False, indent=2)
+
+    # ⚠️ FOJTOTT PÁRHUZAMOSSÁG. Ma este a párhuzamos auditok kimerítették a
+    # FRED rate limitjét, és a lánc `missing`-et adott ott, ahol az adat
+    # LÉTEZIK. Egy panel-hívás könnyen 100 külső kérés — ezért 4-es kapu.
+    sem = asyncio.Semaphore(4)
+
+    async def _cella(cc: str, ind: str) -> dict:
+        async with sem:
+            try:
+                raw = await get_macro_indicator(country=cc, indicator=ind, period=period)
+                d = json.loads(raw)
+            except Exception as e:  # noqa: BLE001
+                return {"country": cc, "indicator": ind, "_gap": f"{type(e).__name__}: {e}"[:160]}
+        if d.get("error") or d.get("value") is None:
+            return {"country": cc, "indicator": ind,
+                    "_gap": str(d.get("error") or d.get("status") or "nincs érték")[:160]}
+        return {"country": cc, "indicator": ind, "value": d.get("value"),
+                "unit": d.get("unit"), "unit_kind": d.get("unit_kind"),
+                "period": d.get("period"), "status": d.get("status"),
+                "source_used": d.get("source_used")}
+
+    cellak = await asyncio.gather(*(_cella(cc, ind) for cc in cc_list for ind in ind_list))
+    rows = [c for c in cellak if "_gap" not in c]
+    gaps = [{"country": c["country"], "indicator": c["indicator"], "reason": c["_gap"]}
+            for c in cellak if "_gap" in c]
+    return json.dumps({
+        "requested": {"countries": cc_list, "indicators": ind_list,
+                      "period": period or "latest"},
+        "summary": {"cells": len(cellak), "resolved": len(rows), "missing": len(gaps)},
+        "rows": rows,
+        "gaps": gaps,
+        "note": ("Minden cella külön forrásból jöhet, más időszakkal — a "
+                 "`source_used` és a `period` cellánként értendő. A `unit_kind` "
+                 "mondja meg, idézhető-e százalékként."),
+    }, ensure_ascii=False, indent=2)
+
+
 # ---------------------------------------------------------------------------
 # REST API — for Bridge / external clients to invoke tools without MCP plumbing
 # ---------------------------------------------------------------------------
 _API_TOOL_DISPATCH = {
+    "get_macro_panel": get_macro_panel,
     "search_datasets": search_datasets,
     "get_eurostat_data": get_eurostat_data,
     "get_ksh_hvd": get_ksh_hvd,
