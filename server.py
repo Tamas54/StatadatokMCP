@@ -5662,6 +5662,16 @@ INDICATOR_RESOLVERS[("EA", "cpi")] = [
     # Eurostat hivatalos flash press release (ap = EA aggregate). A regex
     # célzottan az "up to / expected to be X.Y%" mintát fogja — NE az
     # "up from N.M% in previous month" reference-pontot.
+    # ⚠️ VEGLEGES ELOBB, FLASH UTANA. Ugyanarra a honapra KET Eurostat-
+    # kiadvany van: a honap vegi FLASH (becsles, "10.0e" alakban) es a
+    # kovetkezo honap ~19-i RESZLETES (vegleges). Merve 2026-07-re:
+    # flash Energy 10.0e, vegleges 10.3. Mindketto helyes a maga
+    # forrasahoz — de ha indikatoronkent mas vintage nyer, EGY briefben
+    # keverednek. A vegleges ugyanolyan friss, amint megjelent, es
+    # pontosabb, ezert az megy elore; a flash marad tartaleknak.
+    {"type": "eurostat_press", "suffix": "ap", "window": "mid_month",
+                                "historical": True,
+                                "component_label": "All-items HICP"},
     {"type": "eurostat_press", "suffix": "ap", "historical": True,
                                 "component_label": "All-items HICP",
                                 "rx": r"annual\s+inflation[\s\S]{0,40}?(?:up\s+to|down\s+to|at|expected\s+to\s+be)\s+(\d+[,.]\d)\s*%"},
@@ -5674,9 +5684,23 @@ INDICATOR_RESOLVERS[("EA", "cpi")] = [
                               "rx": r"(\d+[,.]\d)\s*%"},
 ]
 INDICATOR_RESOLVERS[("EA", "core_cpi")] = [
-    # A flash press release tipikusan NEM tartalmaz "core HICP" külön sort,
-    # csak a 4 fő komponenst (services, energy, food, non-energy goods).
-    # ECB ICP XEF000 stale 2025-12-nél. Maradék: brave_search szigorú minta.
+    # A FLASH kiadvany (honap vege) tenyleg NEM tartalmaz core sort — csak a 4
+    # fo komponenst. A RESZLETES kiadvany (honap ~19, szinten `-ap`) VISZONT
+    # igen, "All-items excluding:" tablazatban. Merve 2026-08-30 a
+    # 2-19082026-ap lapon:
+    #     energy, food, alcohol & tobacco  720.4  2.3 2.4 2.3 2.2 2.6 2.4 2.5  0.0
+    #                                     ^suly   ^7 EVES ertek utan ^havi
+    # A `{6}` atlepese utani elso szam a LEGFRISSEBB eves ertek (2,5% =
+    # 2026-07). ⚠️ A szamlalas kritikus: `{5}` a MULT HAVIT adna (2,4), es azt
+    # senki nem venne eszre — a szam hihetonek latszana.
+    # A TABLA-PARSERT hasznaljuk, NEM sajat regexet: a `component_label` az
+    # EGYETLEN indikator-specifikus bemenet, az idoszakot a fejlec adja. Egy
+    # kezzel szamolt regex ("hanyadik szamot vegyem") csendben a MULT HAVIT
+    # adna — ez a hiba egyszer mar majdnem kiment (a `{6}` helyett `{5}`).
+    {"type": "eurostat_press", "suffix": "ap", "window": "mid_month",
+                                "historical": True,
+                                "component_label": "energy, food, alcohol & tobacco",
+                                "rx": r"energy,\s*food,\s*alcohol\s*&\s*tobacco\s+[\d.,]+(?:\s+-?\d+[.,]\d){6}\s+(-?\d+[.,]\d)"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.XEF000.4.ANR"},
     {"type": "brave_search", "query": "Eurostat euro area HICP excluding energy food {YYYY-MM}",
                               "site": "ec.europa.eu",
@@ -5693,12 +5717,32 @@ INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
 INDICATOR_RESOLVERS[("EA", "energy_cpi")] = [
     # A press release markdown-ja TÁBLÁZAT: "**Energy**\n<12 havi érték>\n**10.9e**".
     # Case-sensitive (?-i:) — a kisbetűs "energy" másik táblázatban szerepel.
+    # ⚠️ VEGLEGES ELOBB, FLASH UTANA. Ugyanarra a honapra KET Eurostat-
+    # kiadvany van: a honap vegi FLASH (becsles, "10.0e" alakban) es a
+    # kovetkezo honap ~19-i RESZLETES (vegleges). Merve 2026-07-re:
+    # flash Energy 10.0e, vegleges 10.3. Mindketto helyes a maga
+    # forrasahoz — de ha indikatoronkent mas vintage nyer, EGY briefben
+    # keverednek. A vegleges ugyanolyan friss, amint megjelent, es
+    # pontosabb, ezert az megy elore; a flash marad tartaleknak.
+    {"type": "eurostat_press", "suffix": "ap", "window": "mid_month",
+                                "historical": True,
+                                "component_label": "Energy"},
     {"type": "eurostat_press", "suffix": "ap", "historical": True,
                                 "component_label": "Energy",
                                 "rx": r"(?-i:\*\*Energy\*\*)[\s\S]*?\*\*(-?\d+[,.]?\d*)e?\*\*"},
     {"type": "ecb",          "dataset": "ICP", "key": "M.U2.N.NRGY00.4.ANR"},
 ]
 INDICATOR_RESOLVERS[("EA", "services_cpi")] = [
+    # ⚠️ VEGLEGES ELOBB, FLASH UTANA. Ugyanarra a honapra KET Eurostat-
+    # kiadvany van: a honap vegi FLASH (becsles, "10.0e" alakban) es a
+    # kovetkezo honap ~19-i RESZLETES (vegleges). Merve 2026-07-re:
+    # flash Energy 10.0e, vegleges 10.3. Mindketto helyes a maga
+    # forrasahoz — de ha indikatoronkent mas vintage nyer, EGY briefben
+    # keverednek. A vegleges ugyanolyan friss, amint megjelent, es
+    # pontosabb, ezert az megy elore; a flash marad tartaleknak.
+    {"type": "eurostat_press", "suffix": "ap", "window": "mid_month",
+                                "historical": True,
+                                "component_label": "Services"},
     {"type": "eurostat_press", "suffix": "ap", "historical": True,
                                 "component_label": "Services",
                                 "rx": r"(?-i:\*\*Services\*\*)[\s\S]*?\*\*(-?\d+[,.]?\d*)e?\*\*"},
@@ -6161,8 +6205,15 @@ async def _brave_search_extract(query: str, rx: str, site: str = "") -> Optional
 
 
 async def _resolver_ecb(spec: dict) -> Optional[dict]:
-    """Resolver: ECB Data Portal SDMX. Returns {value, period, source}."""
-    raw = await get_ecb_data(dataset=spec["dataset"], key=spec["key"], last_n=6)
+    """Resolver: ECB Data Portal SDMX. Returns {value, period, source, time_series}.
+
+    A `time_series` KELL, nem dekoracio: enelkul a `get_macro_indicator(period=…)`
+    csak azt a ~7 honapot latja, amit a sajtokozlemeny-tabla hoz, es minden
+    regebbi idoszakra "missing"-et mond — holott a sorozat evekre visszamenoleg
+    megvan. Ha a hivo konkret idoszakot kert, tagabb ablakot huzunk.
+    """
+    n = 180 if spec.get("_want_period") else 6
+    raw = await get_ecb_data(dataset=spec["dataset"], key=spec["key"], last_n=n)
     try:
         d = json.loads(raw)
     except Exception:
@@ -6175,6 +6226,8 @@ async def _resolver_ecb(spec: dict) -> Optional[dict]:
         "value": latest.get("value"),
         "period": latest.get("period"),
         "source": f"ECB {spec['dataset']}/{spec['key']}",
+        "time_series": [{"period": r.get("period"), "value": r.get("value")}
+                        for r in data if r.get("value") is not None],
     }
 
 
@@ -6182,11 +6235,17 @@ async def _resolver_eurostat(spec: dict) -> Optional[dict]:
     """Resolver: Eurostat JSON-stat."""
     args = dict(spec)
     args.pop("type", None)
-    # 24-month window
+    want = args.pop("_want_period", "")
+    for k in [k for k in args if k.startswith("_")]:
+        args.pop(k, None)
+    # 24 honapos ablak; konkret idoszak keresesekor addig VISSZA, ameddig kell.
     from datetime import date as _date
     since = (_date.today().replace(day=1)).strftime("%Y-%m")
-    args.setdefault("sinceTimePeriod",
-                    f"{int(since[:4]) - 2}-{since[5:7]}")
+    if want and len(want) >= 4 and want[:4].isdigit():
+        args.setdefault("sinceTimePeriod", f"{int(want[:4]) - 1}-01")
+    else:
+        args.setdefault("sinceTimePeriod",
+                        f"{int(since[:4]) - 2}-{since[5:7]}")
     raw = await get_eurostat_data(**args)
     try:
         d = json.loads(raw)
@@ -6201,6 +6260,9 @@ async def _resolver_eurostat(spec: dict) -> Optional[dict]:
         "value": latest.get("value"),
         "period": str(latest.get("Time", latest.get("time", ""))),
         "source": f"Eurostat {spec.get('dataset_code')}",
+        "time_series": [{"period": str(r.get("Time", r.get("time", ""))),
+                         "value": r.get("value")}
+                        for r in rows if r.get("value") is not None],
     }
 
 
@@ -6370,7 +6432,9 @@ _SCRAPE_CACHE: dict[tuple[str, str], dict] = {}
 _EUROSTAT_PRESS_MARKDOWN_CACHE: dict[str, str] = {}
 
 
-def _parse_eurostat_press_table(text: str, component_label: str) -> list[dict]:
+def _parse_eurostat_press_table(text: str, component_label: str,
+                                weight_col: bool = True,
+                                section: str = "") -> list[dict]:
     """Parse a 6-7 month time series from an Eurostat HICP flash press release.
 
     The markdown layout is a wide table:
@@ -6380,8 +6444,30 @@ def _parse_eurostat_press_table(text: str, component_label: str) -> list[dict]:
       **Energy**                  | 90.5   | -3.6 | -0.5 | -1.9 | -4.0 | -3.1 | 5.1 | **10.9e** | 3.0e
       **Services**                | 466.9  | 1.1 | 4.0 | 3.5 | 3.4 | 3.2 | 3.4 | **3.0e** | 0.2e
     """
-    # Find month-header tokens. Headers appear as **Mon YY** in markdown.
-    headers = re.findall(r"\*\*([A-Z][a-z]{2})\s+(\d{2})\*\*", text)
+    # ── A HELYES TABLARA SZUKITUNK ────────────────────────────────────────
+    # A kiadvanyban TOBB tabla van (orszagok, aggregatumok, hozzajarulasok),
+    # es az Overview PROZAJA is felkoverre teszi az orszagneveket:
+    #   "The lowest annual rates were registered in **Sweden** (0.3%)…"
+    # Enelkul a `**Sweden**` keresese a PROZAT talalja el, nem a tablat, es egy
+    # ertelmes kinezetu szamot ad rossz idoszakkal.
+    if section:
+        i = text.find(section)
+        if i >= 0:
+            text = text[i:]
+
+    # Fejlec: a szekcio elejen allo, EGYMAST KOVETO honap-tokenek futama.
+    # A korabbi `findall` az EGESZ dokumentumon futott, ezert MINDKET tabla
+    # fejlecet beszedte (16 token 8 helyett), es elrontotta a duplikatum-
+    # szamlalast — amibol a szeletes eggyel elcsuszhatott.
+    _MON = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+            "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+    headers: list[tuple[str, str]] = []
+    for tok in re.findall(r"\*\*([^*\n]{1,40})\*\*", text):
+        mm = re.fullmatch(r"([A-Z][a-z]{2})\s+(\d{2})", tok.strip())
+        if mm and mm.group(1) in _MON:
+            headers.append((mm.group(1), mm.group(2)))
+        elif headers:
+            break          # a fejlec-futam veget ert
     if not headers:
         return []
 
@@ -6410,8 +6496,18 @@ def _parse_eurostat_press_table(text: str, component_label: str) -> list[dict]:
 
     # Find the component-row body. Multiline-tolerant pattern: the label can
     # span newlines ("Food,\nalcohol & tobacco").
+    # ⚠️ A SORT A KOVETKEZO CIMKE ZARJA — BARMILYEN KEZDOBETUVEL.
+    # A korabbi lezaro `\*\*[A-Z]...` csak NAGYBETUS cimkenel allt meg, a
+    # tabla fele viszont kisbetus ("energy, food, alcohol & tobacco",
+    # "unprocessed food", "tobacco"). Azoknal a sor ATFUTOTT a kovetkezo
+    # sorokba: merve ugyanezen a lapon 9 helyett 27-54 erteket gyujtott.
+    # A helyes ertek veletlenul tulelte (a tulcsordulas csak UTANA halmoz),
+    # de ez vak szerencse volt — egy sorrendvaltas a kiadvanyban csendben
+    # rossz szamot adott volna.
+    # Az uj lezaro barmely kovetkezo NEM-SZAM felkover cimkenel all meg; a
+    # `(?![\-\d.])` orzi, hogy a felkover ERTEKEK (`**2.5**`) ne zarjak le.
     pattern = re.compile(
-        rf"(?-i:\*\*\s*{re.escape(component_label)}[^*]*?\*\*)([\s\S]*?)(?=\*\*[A-Z][a-z A-Za-z,&]*?\*\*|\Z)",
+        rf"(?-i:\*\*\s*{re.escape(component_label)}[^*]*?\*\*)([\s\S]*?)(?=\*\*(?![\-\d.])[^*\n]{{1,60}}\*\*|\Z)",
         flags=re.DOTALL,
     )
     m = pattern.search(text)
@@ -6428,8 +6524,15 @@ def _parse_eurostat_press_table(text: str, component_label: str) -> list[dict]:
             continue
 
     n_unique = len(unique_periods)
-    # Expected layout: [Weight] + [N annual rates for unique_periods] + [M monthly rates for dupes]
-    if len(values) >= 1 + n_unique + extra_dupes:
+    # ── SULY-OSZLOP: VAN VAGY NINCS ──────────────────────────────────────
+    # Az AGGREGATUM-tabla sorai sullyal kezdodnek ("All-items HICP 1000.0 …"),
+    # az ORSZAG-tabla sorai NEM ("Germany 1.9 2.0 …"). A kod eddig mindig
+    # sulyt feltetelezett, ezert egy orszagsorbol a HAVI ratat adta vissza az
+    # EVES helyett: Germany 0.9 a 2.8 helyett, Sweden -0.4 a 0.3 helyett,
+    # Netherlands 1.6 a 3.0 helyett. Hihetonek latszo szamok, mind rosszak.
+    if not weight_col:
+        annuals = values[:n_unique]
+    elif len(values) >= 1 + n_unique + extra_dupes:
         # Weight present, then exactly N annuals, then M monthly rate(s)
         annuals = values[1 : 1 + n_unique]
     elif len(values) >= 1 + n_unique:
@@ -6447,6 +6550,54 @@ def _parse_eurostat_press_table(text: str, component_label: str) -> list[dict]:
     out.sort(key=lambda r: r["period"])
     return out
 
+
+# ══════════════════════════════════════════════════════════════════════════
+# ORSZAG-SZINTU HICP — MIND A 30 ORSZAG EGYETLEN TABLABOL
+# ══════════════════════════════════════════════════════════════════════════
+#
+# MIERT (2026-08-30): a `cpi` indikatorra 12 orszagnak volt resolvere, a tobbi
+# `brave_search`-ig esett. Merve, a hiteles Eurostat-tablaval osszevetve:
+#     DE 2.8 ✓ | FR 2.1 (valojaban 2.4) | ES 4.3 (3.9) | IT 0.3 (2.9)
+#     NL 203.1 (3.0 — INDEXSZINTET adott vissza!) | SE 2.9 (0.3) | PL 2.9 (3.1)
+# Tizbol hat rossz, ketto abszurd — es mindegyik EGYETLEN kiadvany tablajaban
+# ott van, hitelesen, 7 honapra visszamenoleg.
+#
+# Az Eurostat havi HICP-kiadvanya orszagonkent egy sort ad ugyanabban a
+# tablaban. Egy `component_label` = egy orszagnev; a tobbi kozos. Ezert itt
+# nincs orszagonkenti regex — egy nevsor van.
+_EUROSTAT_PRESS_COUNTRIES: dict[str, str] = {
+    "BE": "Belgium",   "BG": "Bulgaria", "CZ": "Czechia",     "DK": "Denmark",
+    "DE": "Germany",   "EE": "Estonia",  "IE": "Ireland",     "GR": "Greece",
+    "ES": "Spain",     "FR": "France",   "HR": "Croatia",     "IT": "Italy",
+    "CY": "Cyprus",    "LV": "Latvia",   "LT": "Lithuania",   "LU": "Luxembourg",
+    "HU": "Hungary",   "MT": "Malta",    "NL": "Netherlands", "AT": "Austria",
+    "PL": "Poland",    "PT": "Portugal", "RO": "Romania",     "SI": "Slovenia",
+    "SK": "Slovakia",  "FI": "Finland",  "SE": "Sweden",      "IS": "Iceland",
+    "NO": "Norway",    "CH": "Switzerland",
+}
+
+#: A szekcio-jelolo, ami utan az ORSZAG-tabla kezdodik. Enelkul a kereses az
+#: Overview PROZAJAT talalna el ("…registered in **Sweden** (0.3%)…").
+_EUROSTAT_PRESS_COUNTRY_SECTION = "measured by the HICP"
+
+for _cc, _nev in _EUROSTAT_PRESS_COUNTRIES.items():
+    _spec = {
+        "type": "eurostat_press", "suffix": "ap", "window": "mid_month",
+        "historical": True, "component_label": _nev,
+        # Az orszag-tabla soraiban NINCS suly-oszlop.
+        "weight_col": False,
+        "section": _EUROSTAT_PRESS_COUNTRY_SECTION,
+    }
+    # A megLEVO lancok ELE fuzzuk (a hiteles forras nyer), uj orszagnal a lanc
+    # a strukturalt Eurostat-sorral folytatodik.
+    _meglevo = INDICATOR_RESOLVERS.get((_cc, "cpi"))
+    if _meglevo:
+        INDICATOR_RESOLVERS[(_cc, "cpi")] = [_spec] + _meglevo
+    else:
+        INDICATOR_RESOLVERS[(_cc, "cpi")] = [
+            _spec,
+            {"type": "eurostat", "dataset_code": "prc_hicp_manr", "geo": _cc},
+        ]
 
 # Component-label mapping: indicator → markdown bold label in press release
 _EUROSTAT_PRESS_LABELS: dict[str, str] = {
@@ -6478,9 +6629,13 @@ async def _resolver_eurostat_press(spec: dict) -> Optional[dict]:
     (15..25 of the publication month) and the previous month, finding the
     first URL that returns a regex-matching value.
     """
+    import calendar as _cal
     from datetime import datetime as _dt, timedelta as _td
     suffix = spec.get("suffix", "cp")
-    rx = spec["rx"]
+    # Az `rx` OPCIONALIS: a tabla-uton (`historical` + `component_label`) nincs
+    # ra szukseg, es a kotelezove tetele csendes KeyError-t okozott — az egesz
+    # orszag-lanc emiatt esett at brave_search-re (merve: outcome "error: 'rx'").
+    rx = spec.get("rx") or ""
     # Historical mode: scrape ALL press releases (months_back back) and return
     # a time_series. Default months_back: 3 (single-shot) or 8 (historical).
     historical = bool(spec.get("historical", False))
@@ -6499,12 +6654,30 @@ async def _resolver_eurostat_press(spec: dict) -> Optional[dict]:
         while m_idx <= 0:
             m_idx += 12
             y -= 1
-        if suffix == "ap":
+        # ── ABLAK: hol keressuk a kiadvanyt ──────────────────────────────
+        # Az utotag (ap/cp) es a MEGJELENESI ABLAK ket kulon dolog, de eddig
+        # ossze voltak kotve. A RESZLETES euro-indicator kiadvany a honap
+        # ~19-en jelenik meg, es szinten `-ap` utotagu (merve: 2-19082026-ap
+        # HTTP 200, `-cp` ugyanarra a napra nem letezik). Enelkul a reszletes
+        # kiadvany tablazatai — koztuk az EGYETLEN friss EA MAGINFLACIO —
+        # elerhetetlenek maradtak.
+        window = spec.get("window") or ("month_end" if suffix == "ap" else "mid_month")
+        if window == "month_end":
             # Flash: same month
             ref_y, ref_m = y, m_idx
-            day_range = range(30, 25, -1)  # 30, 29, 28, 27, 26
+            # ⚠️ A HÓNAP UTOLSÓ NAPJÁTÓL visszafelé, NEM fixen 30-tól.
+            # A flash a hónap UTOLSÓ NAPJÁN jelenik meg, ami 31 napos hónapban
+            # a 31-e. A korábbi `range(30, 25, -1)` ezt sosem próbálta, így a
+            # 2026 JÚLIUSI flash (`2-31072026-ap`) láthatatlan maradt — a lánc
+            # végigesett az ECB-n és az Euroston (mindkettő 2025-12-nél áll
+            # ebben a környezetben), és brave_search-ig jutott. Mérve
+            # 2026-08-30: a 31-i URL HTTP 200-at ad és a regex 2,9%-ot fog;
+            # a 30-i URL is 200, de MÁS kiadvány, találat nélkül — ezért nem
+            # tűnt fel, hogy a napsáv rossz.
+            _last = _cal.monthrange(y, m_idx)[1]
+            day_range = range(_last, max(_last - 6, 0), -1)
         else:
-            # Final: previous month
+            # Mid-month: previous month
             ref_m = m_idx - 1
             ref_y = y
             if ref_m <= 0:
@@ -6523,6 +6696,8 @@ async def _resolver_eurostat_press(spec: dict) -> Optional[dict]:
 
     async def _scrape_one_period(period: str, urls: list[str]) -> Optional[dict]:
         """Probe URLs for one reference month; return first match."""
+        if not rx:
+            return None          # regex nelkul csak a tabla-ut ertelmes
         for url in urls:
             cache_key = (url, rx)
             cached = _SCRAPE_CACHE.get(cache_key)
@@ -6586,7 +6761,10 @@ async def _resolver_eurostat_press(spec: dict) -> Optional[dict]:
                             _EUROSTAT_PRESS_MARKDOWN_CACHE[url] = text
                     if not text:
                         continue
-                    ts = _parse_eurostat_press_table(text, component_label)
+                    ts = _parse_eurostat_press_table(
+                        text, component_label,
+                        weight_col=spec.get("weight_col", True),
+                        section=spec.get("section", ""))
                     if ts:
                         latest = ts[-1]
                         # Extract release_date from URL
@@ -6853,6 +7031,7 @@ async def get_macro_indicator(
     country: str,
     indicator: str,
     freshness_days: int = 0,
+    period: str = "",
 ) -> str:
     """High-level macro indicator router — guaranteed-fresh, country-agnostic.
 
@@ -6869,6 +7048,11 @@ async def get_macro_indicator(
     Args:
         country: ISO-2 country code (HU, DE, FR, IT, ES, EA, US, GB, ...).
                  EA = euro area aggregate (uses ECB U2 / Eurostat EA20).
+        period: Optional. Ask for a SPECIFIC period ("2026-03", "2026-Q2")
+                instead of the latest value. Searched in each resolver's
+                `time_series` — the Eurostat press-release table carries the
+                last ~7 months, the structured series go back years. Returns
+                status="historical". Omit it to get the freshest value.
         indicator: One of:
                    "cpi"             — headline HICP annual rate of change (%)
                    "core_cpi"        — core HICP (excl. energy & food), YoY%
@@ -6920,6 +7104,9 @@ async def get_macro_indicator(
         }, ensure_ascii=False, indent=2)
 
     threshold = freshness_days if freshness_days > 0 else _FRESHNESS_DAYS.get(indicator, 90)
+    # A kert idoszakot KULON nevben tartjuk: a hurokban a `period` valtozo a
+    # resolver ALTAL adott idoszak, es felulirodna.
+    want_period = (period or "").strip()
     attempts: list[dict] = []
     best_stale: Optional[dict] = None  # freshest stale value found across the chain
 
@@ -6929,8 +7116,12 @@ async def get_macro_indicator(
         if not fn:
             attempts.append({"resolver": rtype, "outcome": "no_resolver"})
             continue
+        # A resolver TUDJA MEG, hogy konkret idoszakot keresunk — igy tagabb
+        # ablakot huzhat (ECB last_n, Eurostat sinceTimePeriod) ahelyett, hogy
+        # a szokasos par honapot kerne es "missing"-et okozna.
+        spec_eff = {**spec, "_want_period": want_period} if want_period else spec
         try:
-            result = await fn(spec)
+            result = await fn(spec_eff)
         except Exception as e:
             logger.warning("Resolver %s failed: %s", rtype, e)
             attempts.append({"resolver": rtype, "outcome": "error", "error": str(e)[:200]})
@@ -6938,7 +7129,48 @@ async def get_macro_indicator(
         if not result or result.get("value") is None:
             attempts.append({"resolver": rtype, "outcome": "empty"})
             continue
-        period = str(result.get("period") or "")
+        got_period = str(result.get("period") or "")
+
+        # ══ KONKRET IDOSZAK KERESE (2026-08-30) ═════════════════════════
+        # A tool eddig CSAK a legfrissebb erteket adta. "Mennyi volt a
+        # marciusi inflacio?" kerdesre a hivonak a `time_series` mezobe
+        # kellett belenyulnia — ha egyaltalan tudott rola.
+        #
+        # Az adat MAR ITT VAN: a sajtokozlemeny-tabla 7 honapot hoz, es a
+        # strukturalt sorozatok evekre visszamenoleg. Csak kerni nem lehetett.
+        # Innentol `period="2026-03"` a `time_series`-ben keres, es a talalatot
+        # ugyanabban az alakban adja vissza.
+        if want_period:
+            ts = result.get("time_series") or []
+            hit = next((x for x in ts if str(x.get("period")) == want_period), None)
+            if hit is None and got_period == want_period:
+                hit = {"period": got_period, "value": result["value"]}
+            attempts.append({
+                "resolver": rtype, "outcome": "ok" if hit else "no_such_period",
+                "period": got_period, "series_len": len(ts),
+            })
+            if hit is None:
+                continue
+            return json.dumps({
+                "country": country,
+                "indicator": indicator,
+                "value": hit["value"],
+                "period": want_period,
+                "status": "historical",
+                "requested_period": want_period,
+                "source_used": result.get("source", rtype),
+                "source_url": result.get("source_url"),
+                "fallback_chain": [a["resolver"] for a in attempts],
+                "all_attempts": attempts,
+                "time_series": ts or None,
+                "agent_instruction": (
+                    f"Ez a KERT idoszak ({want_period}) {country} {indicator} "
+                    f"erteke: {hit['value']}. NEM a legfrissebb adat — ha a "
+                    f"mostani ertek kell, hivd `period` nelkul."
+                ),
+            }, ensure_ascii=False, indent=2)
+
+        period = got_period
         fresh = _is_fresh(period, threshold)
         attempts.append({
             "resolver": rtype, "outcome": "ok",
