@@ -7461,6 +7461,46 @@ for _cc in _EUROSTAT_PRESS_COUNTRIES:
           if not (r.get("dataset_code") == "une_rt_m")]
     INDICATOR_RESOLVERS[_k] = [_sp] + _m
 
+# ══════════════════════════════════════════════════════════════════════════
+# UGYANAZ A MUTATO MIND A 30 ORSZAGRA — CSAK A `geo` MAS
+# ══════════════════════════════════════════════════════════════════════════
+#
+# MIERT (2026-08-31): a mert, egyseg-szurt specifikaciokat eloszor CSAK HU-ra
+# es EA-ra kototttem be. A 12 nyelvteruleti kiadas ezt azonnal kirakta:
+# Nemetorszag es Olaszorszag 11 mutatobol 6-ot kapott, es az OLASZ
+# ALLAMADOSSAG 26,7%-kent jott vissza — a valos ~135% helyett, mert a
+# `na_item=GD` szuro nelkul mas szeletet ad az Eurostat. Ugyanaz a hiba, amit
+# a magyarnal mar egyszer megfogtam (28,4 a 77,7 helyett).
+#
+# Az adatkeszletek ORSZAGFUGGETLENEK: ugyanaz a dataset, ugyanazok a
+# dimenzio-szurok, csak a `geo` mas. Nincs okunk orszagonkent bekotni —
+# es minden kihagyott orszag egy nema lyuk.
+_ORSZAGFUGGETLEN: dict[str, dict] = {
+    "gov_debt":              {"dataset_code": "gov_10q_ggdebt",
+                              "filters": "unit=PC_GDP&sector=S13&na_item=GD"},
+    "house_prices":          {"dataset_code": "prc_hpi_q",
+                              "filters": "unit=RCH_A&purchase=TOTAL"},
+    "wages":                 {"dataset_code": "lc_lci_r2_q",
+                              "filters": "unit=PCH_SM&nace_r2=B-S&lcstruct=D11&s_adj=NSA"},
+    "retail_trade":          {"dataset_code": "sts_trtu_m",
+                              "filters": "unit=PCH_SM&nace_r2=G47&s_adj=CA&indic_bt=VOL_SLS"},
+    "industrial_production": {"dataset_code": "sts_inpr_m",
+                              "filters": "unit=PCH_SM&nace_r2=B-D&s_adj=CA&indic_bt=PRD"},
+    "ppi":                   {"dataset_code": "sts_inpp_m",
+                              "filters": "unit=PCH_SM&nace_r2=B-E36&s_adj=NSA&indic_bt=PRC_PRR"},
+    "gdp_growth":            {"dataset_code": "namq_10_gdp",
+                              "filters": "na_item=B1GQ&unit=CLV_PCH_SM&s_adj=SCA"},
+}
+for _cc in _EUROSTAT_PRESS_COUNTRIES:
+    for _ind, _spec in _ORSZAGFUGGETLEN.items():
+        _k = (_cc, _ind)
+        _sp = {"type": "eurostat", "geo": _EUROSTAT_GEO.get(_cc, _cc), **_spec}
+        # A MERT spec elore; a regi, szuretlen duplikatumot kiszedjuk — az
+        # adta a rossz szeletet.
+        _m = [r for r in (INDICATOR_RESOLVERS.get(_k) or [])
+              if r.get("dataset_code") != _spec["dataset_code"]]
+        INDICATOR_RESOLVERS[_k] = [_sp] + _m
+
 # ── EUROZONA: A TAGORSZAGNAK NINCS SAJAT ALAPKAMATA ───────────────────────
 # Nemetorszagnak, Franciaorszagnak, Olaszorszagnak nincs onallo jegybanki
 # alapkamata — az EKB-e ervenyes rajuk. Eddig ezek a parok URESEN tertek
