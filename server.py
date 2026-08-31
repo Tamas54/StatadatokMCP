@@ -7523,6 +7523,131 @@ for _cc in _EUROSTAT_PRESS_COUNTRIES:
         INDICATOR_RESOLVERS[_k] = [_sp] + _m
 
 # ══════════════════════════════════════════════════════════════════════════
+# GB / TR / CN — A HAROM NEM-EU NYELVTERULET LEFEDESE
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Kommandant, 2026-08-31: "A maradek hianyt is orvosoljuk, a statdata
+# mcp-ben is! Tehat harmonizaltan dolgozzunk."
+#
+# A 12 nyelvteruleti kiadas kozul harom nem-EU orszaghoz tartozik, es ezek
+# voltak a legszegenyesebbek (GB 4/11, TR 3/11, CN 2/11 mutato). Az alabbi
+# minden egyes tetel ELESBEN MERVE 2026-08-31-en; ami nem volt merheto, az
+# NEM kerult be (S-002: a hianyt bevalljuk, nem toltjuk ki).
+#
+# HAROM TANULSAG, AMI NELKUL EZ ROSSZ ADATOT ADNA:
+#
+# 1. ONS DIOP CIMKE-CSAPDA. A "annual & monthly gr" nevu sorozatok (K27Q,
+#    K2AL) valojaban HO/HO valtozast adnak, a "momy gr" nevuek (K2DG, K2GB)
+#    az EV/EV-et. A nevek forditva vannak. Indexbol visszaellenorizve:
+#    K222 SA 98,3 (2026-06) / 98,5 (2025-06) = -0,20% = K2DG. Ugyanaznap a
+#    K27Q is -0,2-t adott — egyetlen honapbol NEM lett volna eldontheto.
+#
+# 2. A BIS LAKASAR-SOROZATA INDEX. A WS_DPP 104,3-at ad, ami szazalekkent
+#    kiirva "104%-os dragulas" lenne. A `yoy_from_index` kotelezo.
+#
+# 3. A DBNOMICS KINAI ES VILAGBANKI TUKRE HALOTT. NBS utolso megfigyelese
+#    2026-02, a WB GEM 2024-04. Az NBS sajat API-jat a WAF a mi IP-nkrol
+#    403-mal dobja. Ezert marad Kinara ket havi + egy negyedeves mutato —
+#    es ez BEVALLOTT hiany, nem elrejtett.
+
+_ONS = "dbnomics"
+for _ind, _ds, _ser in (
+    # Merve: 4.9 @ 2026-05 (OECD KEI ugyanezt adja — ket fuggetlen forras)
+    ("unemployment",          "LMS",  "MGSX.M"),
+    # Merve: 3.5 @ 2026-06
+    ("wages",                 "LMS",  "KAI9.M"),
+    # Merve: 94.1 @ 2026-07 (GDP-aranyos allomany)
+    ("gov_debt",              "PUSF", "HF6X.M"),
+    # Merve: 1.6 @ 2026-07. Az OECD 2,25-ot ad, mert az gepjarmu nelkul
+    # szamol — MASIK mennyiseg, nem ellentmondas.
+    ("retail_trade",          "DRSI", "J5EB.M"),
+    # Merve: -0.2 @ 2026-06. Lasd az 1. tanulsagot a cimke-csapdarol.
+    ("industrial_production", "DIOP", "K2DG.M"),
+):
+    INDICATOR_RESOLVERS[("GB", _ind)] = [
+        {"type": _ONS, "provider_code": "ONS", "dataset_code": _ds, "series_code": _ser},
+    ] + (INDICATOR_RESOLVERS.get(("GB", _ind)) or [])
+
+# GB hozam + lakasar: az ONS-nek nincs; OECD KEI, illetve BIS index→rata.
+INDICATOR_RESOLVERS[("GB", "bond_yield_10y")] = [
+    # Merve: 4.796 @ 2026-06
+    {"type": "oecd", "agency": "OECD.SDD.STES,DSD_KEI@DF_KEI,4.0",
+     "key": "GBR.M.IRLT.PA._Z._Z._Z", "freshness_days": 100},
+] + (INDICATOR_RESOLVERS.get(("GB", "bond_yield_10y")) or [])
+INDICATOR_RESOLVERS[("GB", "house_prices")] = [
+    # Merve: index 104,3 @ 2026-06 (2025-06: 102,2) → +2,05% ev/ev
+    {"type": "bis_flow", "flow": "WS_DPP", "version": "1.0",
+     "key": "M.GB.0.1.0.1.0.0", "yoy_from_index": True},
+] + (INDICATOR_RESOLVERS.get(("GB", "house_prices")) or [])
+
+# ── TOROKORSZAG ──────────────────────────────────────────────────────────
+# Az Eurostat TR-re 2025-12-nel megall, a dbnomics TCMB-tukre 2025-01-nel.
+INDICATOR_RESOLVERS[("TR", "cpi")] = [
+    # Merve: 31.754 @ 2026-07. A BIS KOZVETLENUL RATAT ad — egyszerubb es
+    # bitre ugyanaz, mint az OECD COICOP-lekeres.
+    {"type": "bis_flow", "flow": "WS_LONG_CPI", "version": "1.0", "key": "M.TR.771"},
+] + (INDICATOR_RESOLVERS.get(("TR", "cpi")) or [])
+for _ind, _key in (
+    ("core_cpi",              None),   # kulon agency, lentebb
+    ("unemployment",          "TUR.M.UNEMP.PT_LF._T.Y._Z"),        # 7.6 @ 2026-06
+    ("retail_trade",          "TUR.M.TOVM.GR.G47.Y.GY"),           # 13.4 @ 2026-06
+    ("industrial_production", "TUR.M.PRVM.GR.BTE.Y.GY"),           # -0.9 @ 2026-06
+    ("gdp_growth",            "TUR.Q.B1GQ_Q.GR._T.Y.GY"),          # 2.8 @ 2026-Q1
+):
+    if not _key:
+        continue
+    INDICATOR_RESOLVERS[("TR", _ind)] = [
+        {"type": "oecd", "agency": "OECD.SDD.STES,DSD_KEI@DF_KEI,4.0", "key": _key},
+    ] + (INDICATOR_RESOLVERS.get(("TR", _ind)) or [])
+INDICATOR_RESOLVERS[("TR", "core_cpi")] = [
+    # Merve: 29.796 @ 2026-07 (energia nelkul)
+    {"type": "oecd",
+     "agency": "OECD.SDD.TPS,DSD_PRICES_COICOP2018@DF_PRICES_C2018_N_TXCP01_NRG,1.0",
+     "key": "TUR.M.N.CPI.PA._TXCP01_NRG.N.GY"},
+] + (INDICATOR_RESOLVERS.get(("TR", "core_cpi")) or [])
+# TR/gov_debt: NINCS. Az ugynok az OECD PSD-flow-t javasolta 28,1 @ 2026-Q1
+# ertekkel — UJRAMERVE NEM REPRODUKALHATO: az egesz TUR-agazat 2023-Q3-nal
+# megall, es a szektor sem S13, hanem S1311 (kozponti kormanyzat). A lekeres
+# HTTP 200-at ad ures dataSet-tel; a 19 uresen hagyott dimenzio-ertek miatt
+# semmire nem illeszkedik, es EZ NEM HIBAKENT jelenik meg.
+# Ezert marad hianykent (S-002: a hianyt bevalljuk, nem toltjuk ki).
+INDICATOR_RESOLVERS[("TR", "house_prices")] = [
+    # Merve: index 234,76 @ 2026-07 (2025-07: 187,78) → +25,02% ev/ev
+    {"type": "bis_flow", "flow": "WS_DPP", "version": "1.0",
+     "key": "M.TR.0.1.0.0.6.0", "yoy_from_index": True},
+] + (INDICATOR_RESOLVERS.get(("TR", "house_prices")) or [])
+
+# ── KINA ─────────────────────────────────────────────────────────────────
+# Harom mutato, es CSAK harom. A tobbire nincs friss forras (lasd a 3.
+# tanulsagot) — a kiadas ezt bevallja, nem potolja ki.
+INDICATOR_RESOLVERS[("CN", "unemployment")] = [
+    # ⚠️ EZ A SOR EGY MERT HIBA JAVITASA. A lanc korabban CSAK webkeresesbol
+    # allt, es 12,5%-ot adott — az a KINAI IFJUSAGI rata, amit a regex
+    # felszedett egy talalati listarol; az orszagos varosi ~5%. A szam
+    # "fresh"-kent, hivatalos kinezettel ment volna a briefbe.
+    # Az NBS-tukor 2026-02-nel megall, tehat ez ELAVULTKENT fog latszani —
+    # es EZ A HELYES VALASZ: van hivatalos forras, csak nem friss. Egy
+    # bevallottan elavult hivatalos szam tobbet er, mint egy frissnek latszo
+    # rossz. (Az NBS sajat API-jat a WAF az IP-nkrol 403-mal dobja.)
+    {"type": "dbnomics", "provider_code": "NBS", "dataset_code": "M_A0E01",
+     "series_code": "A0E0101"},
+] + (INDICATOR_RESOLVERS.get(("CN", "unemployment")) or [])
+INDICATOR_RESOLVERS[("CN", "bond_yield_10y")] = [
+    {"type": "oecd", "agency": "OECD.SDD.STES,DSD_KEI@DF_KEI,4.0",
+     "key": "CHN.M.IRLT.PA._Z._Z._Z", "freshness_days": 130},       # 1.71 @ 2026-05
+] + (INDICATOR_RESOLVERS.get(("CN", "bond_yield_10y")) or [])
+INDICATOR_RESOLVERS[("CN", "gdp_growth")] = [
+    {"type": "oecd", "agency": "OECD.SDD.STES,DSD_KEI@DF_KEI,4.0",
+     "key": "CHN.Q.B1GQ_Q.GR._T.Y.GY"},                             # 4.3 @ 2026-Q2
+] + (INDICATOR_RESOLVERS.get(("CN", "gdp_growth")) or [])
+INDICATOR_RESOLVERS[("CN", "house_prices")] = [
+    # A BIS WS_SPP MAR RATA (nem index) — itt NEM kell yoy_from_index.
+    # Merve: -6.30 @ 2026-Q1, orszagos, nominalis.
+    {"type": "bis_flow", "flow": "WS_SPP", "version": "1.0", "key": "Q.CN.N.771"},
+] + (INDICATOR_RESOLVERS.get(("CN", "house_prices")) or [])
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # NEMZETI MAGINFLACIO — A HARMONIZALT MELLE, NEM HELYETTE
 # ══════════════════════════════════════════════════════════════════════════
 #
@@ -8028,6 +8153,87 @@ async def _resolver_bis_direct(spec: dict) -> Optional[dict]:
     }
 
 
+async def _resolver_bis_flow(spec: dict) -> Optional[dict]:
+    """Resolver: BARMELY BIS SDMX dataflow (nem csak a WS_CBPOL).
+
+    Merve 2026-08-31, harom flow-val: WS_DPP (lakasar-index), WS_SPP
+    (lakasar-rata), WS_LONG_CPI (hosszu inflacios sorozat).
+
+    ⚠️ HAROM CSAPDA, MIND MERVE:
+      1. Az `Accept` fejlecben a verzio 1.0.0 KELL — 2.0.0-ra es fejlec nelkul
+         is 406-ot ad.
+      2. A `latest` verzio-referencia a data-vegponton TILOS; expliciten
+         "1.0"-t kell irni (kiveve WS_TC, ami 2.0).
+      3. A WS_DPP INDEXET ad, nem ratat. Egy index-szint szazalekkent kiirva
+         a legrosszabb fajta hiba: "104,3%-os lakasar-drágulas" hihetonek
+         LATSZIK. Ezert a `yoy_from_index` kotelezo ezekre a sorozatokra.
+    """
+    flow = spec["flow"]
+    ver = spec.get("version", "1.0")
+    key = spec["key"]
+    url = f"https://stats.bis.org/api/v2/data/dataflow/BIS/{flow}/{ver}/{key}"
+    client = await get_client()
+    try:
+        r = await client.get(
+            url, params={"lastNObservations": spec.get("n", 26), "format": "jsondata"},
+            headers={"Accept": "application/vnd.sdmx.data+json;version=1.0.0"},
+            timeout=25.0)
+        if r.status_code != 200:
+            return None
+        parok = _parse_sdmx_json(r.json())
+    except Exception:
+        return None
+    if not parok:
+        return None
+    if spec.get("yoy_from_index"):
+        parok = _yoy_from_index(parok)
+        if not parok:
+            return None
+    per, val = parok[-1]
+    return {
+        "value": val,
+        "period": per,
+        "source": f"BIS {flow} direct ({key})",
+        "time_series": [{"period": p_, "value": v_} for p_, v_ in parok],
+    }
+
+
+def _elozo_ev(period: str) -> Optional[str]:
+    """Az EGY EVVEL KORABBI periodus-cimke. None, ha nem ertjuk az alakot."""
+    p = (period or "").strip()
+    try:
+        if "-Q" in p:                       # 2026-Q2 → 2025-Q2
+            ev, neg = p.split("-Q")
+            return f"{int(ev) - 1}-Q{neg}"
+        if len(p) >= 7 and p[4] == "-":     # 2026-06 / 2026-06-01 → 2025-06…
+            return f"{int(p[:4]) - 1}{p[4:]}"
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def _yoy_from_index(parok: list) -> list:
+    """Index-sorozatbol EVES VALTOZAS.
+
+    ⚠️ A KULCS: az egy evvel korabbi tetelt a PERIODUS-CIMKE alapjan keressuk,
+    NEM 12 pozicioval visszaszamolva. Egy hianyzo honap eseten a poziciós
+    szamolas 13 vagy 11 honapot hasonlitana ossze — es a hiba (par tized
+    szazalek) pont akkora, hogy hihetonek latszik.
+    """
+    ertek = {p: v for p, v in parok}
+    ki = []
+    for p, v in parok:
+        elozo = _elozo_ev(p)
+        alap = ertek.get(elozo) if elozo else None
+        if alap in (None, 0):
+            continue
+        try:
+            ki.append((p, round((float(v) / float(alap) - 1.0) * 100.0, 2)))
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+    return ki
+
+
 async def _resolver_oecd(spec: dict) -> Optional[dict]:
     """Resolver: OECD SDMX direct query.
 
@@ -8096,6 +8302,7 @@ _RESOLVERS = {
     "dbnomics": _resolver_dbnomics,
     "oecd": _resolver_oecd,
     "bis_direct": _resolver_bis_direct,
+    "bis_flow": _resolver_bis_flow,
     "ksh_stadat": _resolver_ksh_stadat,
     "ksh_flash": _resolver_ksh_flash,
     "scrape": _resolver_scrape,
@@ -8232,6 +8439,13 @@ async def get_macro_indicator(
         # ablakot huzhat (ECB last_n, Eurostat sinceTimePeriod) ahelyett, hogy
         # a szokasos par honapot kerne es "missing"-et okozna.
         spec_eff = {**spec, "_want_period": want_period} if want_period else spec
+        # A KUSZOB A FORRAS UTEMET KOVESSE, NE A MUTATOET (2026-08-31).
+        # A `bond_yield_10y` 60 napos kuszobe a napi ECB-hozamra szabott —
+        # de az OECD KEI ugyanezt a mutatot HAVI atlagkent, ~2 honap kesessel
+        # publikalja. A britek hozamat ezert "elavult"-nak jeloltuk, holott
+        # az volt a legfrissebb, ami LETEZIK. A forras deklaralhatja a sajat
+        # utemet; ahol nem, marad a mutato alapertelmezese.
+        spec_threshold = spec.get("freshness_days") or threshold
         try:
             result = await fn(spec_eff)
         except Exception as e:
@@ -8315,7 +8529,7 @@ async def get_macro_indicator(
             }, ensure_ascii=False, indent=2)
 
         period = got_period
-        fresh = _is_fresh(period, threshold)
+        fresh = _is_fresh(period, spec_threshold)
         _health_record(rtype, "ok")
         attempts.append({
             "resolver": rtype, "outcome": "ok",
@@ -8347,7 +8561,16 @@ async def get_macro_indicator(
                 "status": "fresh",
                 "source_used": result.get("source", rtype),
                 "source_url": result.get("source_url"),
-                "freshness_threshold_days": threshold,
+                "freshness_threshold_days": spec_threshold,
+                # ⚠️ HONNAN JOTT: hivatalos sorozatbol vagy TALALATI LISTAROL?
+                # Merve 2026-08-31: a kinai munkanelkuliseg 12,5%-ot adott —
+                # ez az IFJUSAGI rata, amit a regex felszedett egy keresesi
+                # talalatbol. Az orszagos ~5%. Egy webkeresesbol regexelt szam
+                # pontosan ugy nez ki, mint egy hivatalos: ugyanaz a mezo,
+                # ugyanaz a "fresh". A KULONBSEGET KI KELL MONDANI, kulonben
+                # a hivo nem tud dontani — es a brief hamis allitast tesz.
+                "confidence": ("web_unverified" if rtype == "brave_search"
+                               else "official"),
                 "fallback_chain": [a["resolver"] for a in attempts],
                 "all_attempts": attempts,
                 "agent_instruction": (
@@ -8357,6 +8580,15 @@ async def get_macro_indicator(
                     f"NEM minősítendők 'hiányzó forrásnak' vagy 'nem elérhető adatnak'. "
                     f"A {indicator} ITT VAN, FRISSEN. Idézd ezt az értéket és a "
                     f"source_used-et a brief-ben — ne flag-eld hiányzónak."
+                    + ("  ⚠️ FIGYELEM: ez az érték egy WEBKERESÉS találati "
+                       "listájáról származik (confidence=web_unverified), NEM "
+                       "hivatalos statisztikai sorozatból. Egy regex a lap "
+                       "első százalékát szedte fel — az lehet más mutató is "
+                       "(pl. ifjúsági munkanélküliség az országos helyett). "
+                       "Táblázatba, briefbe csak forrásmegjelöléssel és "
+                       "fenntartással kerüljön; ha pontos szám kell, keress "
+                       "strukturált forrást."
+                       if rtype == "brave_search" else "")
                 ),
             }
             # Optional context fields propagated from resolver
@@ -9014,6 +9246,10 @@ async def get_macro_panel(
         return {"country": cc, "indicator": ind, "value": d.get("value"),
                 "unit": d.get("unit"), "unit_kind": d.get("unit_kind"),
                 "period": d.get("period"), "status": d.get("status"),
+                # A cella HORDOZZA, honnan jott. Enelkul a panel hivoja nem
+                # tudja megkulonboztetni a hivatalos sorozatot a keresesi
+                # talalatbol regexelt szamtol — pedig a ketto ugyanugy nez ki.
+                "confidence": d.get("confidence", "official"),
                 "source_used": d.get("source_used")}
 
     cellak = await asyncio.gather(*(_cella(cc, ind) for cc in cc_list for ind in ind_list))
