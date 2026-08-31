@@ -5668,11 +5668,19 @@ BRAVE_MCP_URL = os.environ.get("BRAVE_MCP_URL", "").strip().rstrip("/")
 # enough that we stop the resolver chain. Tuned to typical publication cadence
 # plus a 2-week grace window.
 _FRESHNESS_DAYS: dict[str, int] = {
-    "cpi": 60,           # Monthly, published ~10–15 days after month-end
-    "core_cpi": 60,
-    "services_cpi": 60,
-    "energy_cpi": 60,
-    "food_cpi": 60,
+    # ⚠️ A KUSZOBOT A PERIODUS KEZDETETOL merjuk, nem a vegetol — egy havi
+    # adat idoszaka "2026-07-01", tehat a honap vegen mar 30 nap "kort".
+    # A 60 nap ezert ELVAGTA a helyes erteket: 2026-08-31-en a FRED 3,30%-os
+    # JULIUSI US CPI-je 61 napos volt, "nem friss" lett, es a lanc egy
+    # BLS-scrape-re esett, ami a HAVI 0,1%-ot szedte fel eves helyett.
+    # Egyetlen nap kulonbseg — 3,3 helyett 0,1 a briefben.
+    # A havi mutatok igy 30 (a periodus hossza) + ~20 (publikalasi keses) +
+    # tartalek = 85 napot kapnak.
+    "cpi": 85,           # Monthly, published ~10–15 days after month-end
+    "core_cpi": 85,
+    "services_cpi": 85,
+    "energy_cpi": 85,
+    "food_cpi": 85,
     "policy_rate": 75,   # Monthly meetings; flash decision page must be <2.5mo
     "unemployment": 95,  # Monthly, published with 1–2 month lag (Eurostat)
     "gdp": 185,          # Quarterly absolute value
