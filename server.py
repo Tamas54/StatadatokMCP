@@ -2507,6 +2507,98 @@ async def get_ksh_stadat(
 
 
 @mcp.tool()
+async def bet_index(index: str = "BUX") -> str:
+    """Budapesti Ertektozsde index (BUX, CETOPNTR) — ertek, napi valtozas.
+
+    ⚠️ MIERT VAN ERRE KULON TOOL. A BUX-nak NINCS elo Yahoo-szimboluma:
+    `^BUX` STALE adatot ad, a `^BUXI` / `BUX.BD` / `BUX.BUD` nem letezik, es a
+    stooq sem viszi. Merve 2026-08-31.
+
+    HOL VAN AZ ADAT. A bet.hu nyitolapja JS-portlettel rajzolja az indexet, es
+    a DOM-elemek (`buxIndexPanel-index` stb.) a nyers HTML-ben URESEK — ez
+    tereli el elsore a keresest. Az ERTEK viszont OTT VAN a lapon, egy
+    beagyazott JSON-blobban, amibol a JS feltolti oket:
+
+        "BuxIndexPanelDataSource": {"index": 149161.68,
+         "changeInPercent": -0.9987, "lastDayOfCloseIndex": 150666.43, ...}
+
+    Tehat bongeszo NEM kell — csak a helyes helyen kell keresni.
+
+    ⚠️ ES EGY CSAPDA, AMIT KERULNI KELL: ugyanezen a lapon szerepel a
+    "14.639.314.708 Ft" baziskapitalizacio is. Az elso probalkozasom pont azt
+    szedte fel, es hiheto indexertekkent atment volna.
+
+    Args:
+        index: "BUX" (alapertelmezett) vagy "CETOPNTR".
+
+    Returns:
+        JSON: value, change, change_pct, prev_close, low_52w, high_52w,
+        turnover_mft, trading_day, source_url.
+    """
+    import re as _re
+    nev = (index or "BUX").strip().upper()
+    _BET_NEVEK = {"BUX": "Bux", "CETOPNTR": "CetopNtr", "CETOP": "CetopNtr"}
+    blob_nev = _BET_NEVEK.get(nev)
+    if not blob_nev:
+        return json.dumps({"error": f"Ismeretlen BET-index: {index}",
+                           "available": sorted(_BET_NEVEK)}, ensure_ascii=False)
+    client = await get_client()
+    try:
+        r = await client.get(
+            "https://www.bet.hu/",
+            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
+                                   "AppleWebKit/537.36 Chrome/120 Safari/537.36"},
+            timeout=25.0)
+        if r.status_code != 200:
+            return json.dumps({"error": f"bet.hu HTTP {r.status_code}"},
+                              ensure_ascii=False)
+        szoveg = r.text
+    except Exception as e:  # noqa: BLE001
+        return json.dumps({"error": f"bet.hu nem elerheto: {type(e).__name__}: {e}"},
+                          ensure_ascii=False)
+    m = _re.search(rf'"{blob_nev}IndexPanelDataSource"\s*:\s*(\{{[^{{}}]*\}})', szoveg)
+    if not m:
+        # ⚠️ A HIANYT KIMONDJUK. Ha a bet.hu atalakitja a lapot, ez a tool
+        # NEM adhat vissza csendben semmit — a hivo kulonben azt hinne, hogy
+        # a tozsde all.
+        return json.dumps({
+            "error": "A bet.hu lapjan nem talalhato az index-blob "
+                     f"({blob_nev}IndexPanelDataSource). Valoszinuleg valtozott "
+                     "az oldal szerkezete.",
+            "hint": "Ellenorizd a https://www.bet.hu/ forrasat; a blob a "
+                    "data-datasource-config attributumhoz tartozik.",
+        }, ensure_ascii=False)
+    try:
+        d = json.loads(m.group(1))
+    except ValueError as e:
+        return json.dumps({"error": f"a blob nem ertelmezheto: {e}"},
+                          ensure_ascii=False)
+    ertek = d.get("index")
+    if ertek is None:
+        return json.dumps({"error": "a blobban nincs `index` mezo"},
+                          ensure_ascii=False)
+    return json.dumps({
+        "index": nev,
+        "value": _keresztul_kerekit(ertek),
+        "change": _keresztul_kerekit(d.get("change")),
+        "change_pct": _keresztul_kerekit(d.get("changeInPercent")),
+        "prev_close": _keresztul_kerekit(d.get("lastDayOfCloseIndex")),
+        "low_52w": _keresztul_kerekit(d.get("minIndex")),
+        "high_52w": _keresztul_kerekit(d.get("maxIndex")),
+        "turnover_mft": d.get("traffic"),
+        "market_cap_bnft": d.get("capitalization"),
+        "trading_day": d.get("tradingDay"),
+        "source": "Budapesti Ertektozsde (bet.hu)",
+        "source_url": "https://www.bet.hu/",
+        "agent_instruction": (
+            "A `value` az index PONTERTEKE, a `change_pct` a NAPI valtozas "
+            "szazalekban. A `market_cap_bnft` NEM index — ne idezd "
+            "indexertekkent."
+        ),
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
 async def yfinance(
     symbol: str,
     action: str = "quote",
@@ -9269,9 +9361,26 @@ async def get_macro_panel(
         if d.get("error") or d.get("value") is None:
             return {"country": cc, "indicator": ind,
                     "_gap": str(d.get("error") or d.get("status") or "nincs érték")[:160]}
+        # ELOZO MEGFIGYELES — AZ IRANY NEM TALALHATO KI EGY SZAMBOL.
+        # Egy 3,7%-os maginflaciorol a hivo (ember vagy modell) nem tudja
+        # megmondani, emelkedik-e vagy csokken; ha megis ir rola, KITALALJA.
+        # Merve tobbszor: az LLM egyetlen szintbol magabiztos iranyt allit.
+        # Ezert a cella HOZZA az elozo tetelt is, ha a resolver adott
+        # idosort — es ha nem adott, a mezo None marad, tehat a hivo LATJA,
+        # hogy nincs alapja iranyt allitani.
+        _elozo_ertek = _elozo_idoszak = None
+        _ts = d.get("time_series") or []
+        if len(_ts) >= 2:
+            _mostani = str(d.get("period") or "")
+            _i = next((j for j, x in enumerate(_ts)
+                       if str(x.get("period")) == _mostani), len(_ts) - 1)
+            if _i >= 1:
+                _elozo_ertek = _keresztul_kerekit(_ts[_i - 1].get("value"))
+                _elozo_idoszak = _ts[_i - 1].get("period")
         return {"country": cc, "indicator": ind, "value": d.get("value"),
                 "unit": d.get("unit"), "unit_kind": d.get("unit_kind"),
                 "period": d.get("period"), "status": d.get("status"),
+                "prev_value": _elozo_ertek, "prev_period": _elozo_idoszak,
                 # A cella HORDOZZA, honnan jott. Enelkul a panel hivoja nem
                 # tudja megkulonboztetni a hivatalos sorozatot a keresesi
                 # talalatbol regexelt szamtol — pedig a ketto ugyanugy nez ki.
@@ -9325,7 +9434,12 @@ async def resolver_health() -> str:
 # ---------------------------------------------------------------------------
 # REST API — for Bridge / external clients to invoke tools without MCP plumbing
 # ---------------------------------------------------------------------------
+# ⚠️ KET REGISZTER, KETTOT KELL TOLTENI. A `@mcp.tool()` az MCP-utat nyitja
+# meg, a REST `/api/call` viszont EBBOL a tablabol dolgozik. A `bet_index`
+# dekoralva volt, megis "unknown tool"-t adott — mert ide kimaradt.
+# Egy uj tool NEM MUKODIK, amig mindketto nem tud rola.
 _API_TOOL_DISPATCH = {
+    "bet_index": bet_index,
     "get_macro_panel": get_macro_panel,
     "resolver_health": resolver_health,
     "search_datasets": search_datasets,
