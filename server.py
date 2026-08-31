@@ -7475,7 +7475,22 @@ for _cc in _EUROSTAT_PRESS_COUNTRIES:
 # Az adatkeszletek ORSZAGFUGGETLENEK: ugyanaz a dataset, ugyanazok a
 # dimenzio-szurok, csak a `geo` mas. Nincs okunk orszagonkent bekotni —
 # es minden kihagyott orszag egy nema lyuk.
+# ⚠️ A NYOLC HONAPOS LEMARADAS GYOKERE (megtalalva 2026-08-31):
+# az Eurostat 2026-01-tol ECOICOP ver.2-re vitte a HICP-et, es a REGI
+# dataflow-k (`prc_hicp_manr`, `prc_hicp_midx`, `prc_hicp_mmor`) BE VANNAK
+# FAGYVA 2025-12-nel. Az ECB ICP es az OECD COICOP-1999 ugyanezt a halott
+# lancot tukrozi — ezert kaptunk MINDENHOL 2025-12-t, es ezert kellett a
+# sajtokozlemenyt kaparni.
+# Az elo utod: `prc_hicp_minr`, ahol a dimenzio neve `coicop18`, NEM `coicop`
+# (a regi nevvel INVALID_QUERY_DIMENSION a valasz). Egyetlen betu rejtette el.
+# Merve 2026-07-re mind a hat orszagra: FR 1.4 · IT 1.8 · ES 3.7 · EL 2.5 ·
+# PL 2.7 · HU 3.7 (TOT_X_NRG_FOOD = ex energia, elelmiszer, alkohol, dohany).
+# A `RCH_A` mar EVES RATA — `compute_yoy` nem kell.
 _ORSZAGFUGGETLEN: dict[str, dict] = {
+    "core_cpi":              {"dataset_code": "prc_hicp_minr",
+                              "filters": "coicop18=TOT_X_NRG_FOOD&unit=RCH_A"},
+    "hicp":                  {"dataset_code": "prc_hicp_minr",
+                              "filters": "coicop18=CP00&unit=RCH_A"},
     "gov_debt":              {"dataset_code": "gov_10q_ggdebt",
                               "filters": "unit=PC_GDP&sector=S13&na_item=GD"},
     "house_prices":          {"dataset_code": "prc_hpi_q",
