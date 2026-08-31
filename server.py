@@ -4453,6 +4453,18 @@ def _normalize_period(per: str) -> str:
     return per.strip()
 
 
+def _keresztul_kerekit(v):
+    """Harom tizedesre kerekites — de CSAK szamra, es a tipust megtartva.
+
+    Az `int` erintetlen marad (egy 2026-os evszam nem lesz 2026.0), a nem-szam
+    (None, string) valtozatlanul megy at: egy kerekito, ami atalakit vagy dob,
+    tobbet ront, mint amennyit javit.
+    """
+    if isinstance(v, bool) or not isinstance(v, float):
+        return v
+    return round(v, 3)
+
+
 def _unit_of(country: str, indicator: str) -> tuple[str, str]:
     """(unit, unit_kind) — sose dob; ismeretlenre oszinten "unknown"."""
     ov = _UNIT_OVERRIDE.get((country, indicator))
@@ -7620,6 +7632,14 @@ INDICATOR_RESOLVERS[("TR", "house_prices")] = [
 # ── KINA ─────────────────────────────────────────────────────────────────
 # Harom mutato, es CSAK harom. A tobbire nincs friss forras (lasd a 3.
 # tanulsagot) — a kiadas ezt bevallja, nem potolja ki.
+# ── GOROGORSZAG: LAKASARAK ────────────────────────────────────────────────
+# A Eurostat `prc_hpi_q` EL-re URES — nem szurohiba: a geo-dimenzio merete
+# NULLA, tehat gorog adat nincs a tablaban. A BIS viszont viszi.
+# Merve: 5.724 @ 2026-Q1 (nominalis, ev/ev — MAR RATA, nem index).
+INDICATOR_RESOLVERS[("GR", "house_prices")] = [
+    {"type": "bis_flow", "flow": "WS_SPP", "version": "1.0", "key": "Q.GR.N.771"},
+] + (INDICATOR_RESOLVERS.get(("GR", "house_prices")) or [])
+
 INDICATOR_RESOLVERS[("CN", "unemployment")] = [
     # ⚠️ EZ A SOR EGY MERT HIBA JAVITASA. A lanc korabban CSAK webkeresesbol
     # allt, es 12,5%-ot adott — az a KINAI IFJUSAGI rata, amit a regex
@@ -8554,7 +8574,13 @@ async def get_macro_indicator(
             out_payload = {
                 "country": country,
                 "indicator": indicator,
-                "value": result["value"],
+                # HAMIS PONTOSSAG LEVAGASA. Az OECD "2.83233619786336"-ot ad
+                # a torok GDP-novekedesre — tizenot ertekes jegy egy olyan
+                # mennyisegre, amit negyedevente FELFELE revidealnak par
+                # tizeddel. A tobblet-jegy nem informacio, hanem AZ ELLENKEZOJE:
+                # azt sugallja, hogy tizedmilliomod szazalekra tudjuk. Harom
+                # tizedes a leghosszabb ertelmes alak (hozamok: 5,298%).
+                "value": _keresztul_kerekit(result["value"]),
                 "unit": _u,
                 "unit_kind": _uk,           # rate | level | index | unknown
                 "period": period,
