@@ -6,3 +6,7 @@ dist/
 build/
 .venv/
 venv/
+
+# helyi biztonsagi masolatok — sose kerulhetnek a repoba
+*.bak
+*.bak-*

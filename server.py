@@ -4311,6 +4311,7 @@ _EUROSTAT_CALENDAR = {
 _PLAUSIBLE_RANGE: dict[str, tuple[float, float]] = {
     "cpi":                   (-20.0, 60.0),
     "core_cpi":              (-20.0, 60.0),
+    "core_cpi_national":     (-20.0, 60.0),
     "services_cpi":          (-20.0, 60.0),
     "energy_cpi":            (-80.0, 200.0),   # energia tud +100%-ot mozdulni
     "food_cpi":              (-30.0, 80.0),
@@ -4353,7 +4354,9 @@ _PLAUSIBLE_RANGE: dict[str, tuple[float, float]] = {
 _INDICATOR_UNIT: dict[str, tuple[str, str]] = {
     "cpi":                   ("annual % change (YoY)", "rate"),
     "hicp":                  ("annual % change (YoY)", "rate"),
-    "core_cpi":              ("annual % change (YoY)", "rate"),
+    "core_cpi":              ("annual % change (YoY), HARMONISED (Eurostat HICP)", "rate"),
+    "core_cpi_national":     ("annual % change (YoY), NATIONAL definition — "
+                              "NOT comparable across countries", "rate"),
     "services_cpi":          ("annual % change (YoY)", "rate"),
     "energy_cpi":            ("annual % change (YoY)", "rate"),
     "food_cpi":              ("annual % change (YoY)", "rate"),
@@ -4401,6 +4404,8 @@ _INDICATOR_ALIAS: dict[str, str] = {
     "inflation": "cpi", "inflation_rate": "cpi", "hicp_rate": "cpi",
     "consumer_prices": "cpi", "cpi_yoy": "cpi", "arindex": "cpi",
     "core_inflation": "core_cpi", "core": "core_cpi", "maginflacio": "core_cpi",
+    "national_core": "core_cpi_national", "core_cpi_nat": "core_cpi_national",
+    "nemzeti_maginflacio": "core_cpi_national",
     "interest_rate": "policy_rate", "base_rate": "policy_rate",
     "alapkamat": "policy_rate", "central_bank_rate": "policy_rate",
     "key_rate": "policy_rate", "rate": "policy_rate",
@@ -5678,6 +5683,7 @@ _FRESHNESS_DAYS: dict[str, int] = {
     # tartalek = 85 napot kapnak.
     "cpi": 85,           # Monthly, published ~10–15 days after month-end
     "core_cpi": 85,
+    "core_cpi_national": 85,
     "services_cpi": 85,
     "energy_cpi": 85,
     "food_cpi": 85,
@@ -7515,6 +7521,42 @@ for _cc in _EUROSTAT_PRESS_COUNTRIES:
         _m = [r for r in (INDICATOR_RESOLVERS.get(_k) or [])
               if r.get("dataset_code") != _spec["dataset_code"]]
         INDICATOR_RESOLVERS[_k] = [_sp] + _m
+
+# ══════════════════════════════════════════════════════════════════════════
+# NEMZETI MAGINFLACIO — A HARMONIZALT MELLE, NEM HELYETTE
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Kommandant, 2026-08-31: "tegyuk hozza a magyarokhoz a szar sajat KSH-s
+# adatokat is."
+#
+# A ket szam MINDKETTO helyes, csak MAS KOSAR:
+#   HU harmonizalt (Eurostat, ex energia+elelmiszer+alkohol+dohany): 3,7%
+#   HU nemzeti     (KSH maginflacio, mas kosar es sulyozas):         1,9%
+# Egy kiadasban SOHA nem szabad a kettot keverni — es a magyar olvaso a KSH
+# szamat latja a hirekben, tehat ha csak a harmonizaltat mutatnank, azt
+# hinne, tevedunk.
+#
+# Ezert KULON MUTATO, kulon nevvel. Nem "pontosabb" valtozat, hanem MASIK
+# mennyiseg — a nev mondja meg, melyik.
+_NEMZETI_CORE: dict[str, dict] = {
+    # KSH gyorstajekoztato — a HU/core_cpi korabbi, MERT es MUKODO specje.
+    # A tabla "Maginfláció ... 100,4 102,2" alakot ad: az ELSO szam a havi,
+    # a MASODIK az eves (100=bazis). A regex atugorja a havit — ez pontosan
+    # az a hibaosztaly, amibe a tajvani es a nemet sornal is majdnem beleestem.
+    "HU": {"type": "ksh_flash", "topic": "far",
+           "rx": r"[Mm]aginfláció[\s\S]{0,200}?\d{3}[,.]\d[\s\S]{0,30}?(\d{3}[,.]\d)",
+           "convert": "subtract_100"},
+    # INSEE "inflation sous-jacente" — szezonalisan ES adohatasra korrigalt.
+    # Merve: 1,3 @ 2026-07.
+    "FR": {"type": "dbnomics", "provider_code": "INSEE", "dataset_code": "IPC-2025",
+           "series_code": "M.ISJ.SO.SO.4022.GLISSEMENT_ANNUEL.ENSEMBLE.FM.POURCENT.CVS-FISC.2025.FALSE"},
+    # ISTAT NIC "componente di fondo" — ex energia + feldolgozatlan elelmiszer.
+    # Merve: 1,6 @ 2026-07.
+    "IT": {"type": "dbnomics", "provider_code": "ISTAT", "dataset_code": "167_745",
+           "series_code": "M.IT.85.7.00XEFOODUNP"},
+}
+for _cc, _spec in _NEMZETI_CORE.items():
+    INDICATOR_RESOLVERS[(_cc, "core_cpi_national")] = [dict(_spec)]
 
 # ── EUROZONA: A TAGORSZAGNAK NINCS SAJAT ALAPKAMATA ───────────────────────
 # Nemetorszagnak, Franciaorszagnak, Olaszorszagnak nincs onallo jegybanki

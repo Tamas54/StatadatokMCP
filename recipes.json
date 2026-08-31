@@ -659,7 +659,7 @@
       "key": "D.U2.EUR.4F.KR.DFR.LEV"
     },
     "note": "ECB Deposit Facility Rate — the operational euro-area policy rate since 2019. Daily, %.",
-    "call_count": 1,
+    "call_count": 2,
     "last_used": null,
     "source": "seed"
   },
@@ -701,7 +701,7 @@
       "key": "M.HU.N.SERV00.4.ANR"
     },
     "note": "ECB ICP — HU HICP services, monthly YoY%. Service inflation breakdown that KSH STADAT only publishes annually.",
-    "call_count": 1,
+    "call_count": 2,
     "last_used": null,
     "source": "seed"
   },
@@ -722,7 +722,7 @@
       "key": "M.HU.N.XEF000.4.ANR"
     },
     "note": "ECB ICP — HU core HICP (excl. energy & food), monthly YoY%.",
-    "call_count": 0,
+    "call_count": 7,
     "last_used": null,
     "source": "seed"
   },
@@ -743,7 +743,7 @@
       "key": "M.HU.N.000000.4.ANR"
     },
     "note": "ECB ICP — HU HICP overall, monthly YoY%. For 2026-on data when KSH STADAT lags, prefer get_flash_releases first then ECB.",
-    "call_count": 1,
+    "call_count": 2,
     "last_used": null,
     "source": "seed"
   },
@@ -764,7 +764,7 @@
       "key": "M.U2.N.000000.4.ANR"
     },
     "note": "ECB ICP — Euro area HICP overall (includes flash estimates). Monthly YoY%.",
-    "call_count": 0,
+    "call_count": 1,
     "last_used": null,
     "source": "seed"
   },
@@ -829,8 +829,364 @@
       "key": "M.HU.L.L40.CI.0000.HUF.N.Z"
     },
     "note": "HU 10Y government bond yield (Maastricht convergence criterion), monthly %.",
-    "call_count": 0,
+    "call_count": 2,
     "last_used": null,
     "source": "seed"
+  },
+  {
+    "id": "auto_Eurostat_prc_hicp_manr_HU",
+    "keywords": [
+      "eurostat",
+      "prc_hicp_manr",
+      "hu"
+    ],
+    "provider": "Eurostat",
+    "dataset": "prc_hicp_manr",
+    "dimensions": {
+      "geo": "HU"
+    },
+    "note": "Auto-learned from dbnomics_series (prc_hicp_manr)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_ECB_ICP_M.DE.N.000000.4.ANR",
+    "keywords": [
+      "ecb",
+      "icp",
+      "m.de.n.000000.4.anr",
+      "indices",
+      "consumer",
+      "prices"
+    ],
+    "provider": "ECB",
+    "dataset": "ICP",
+    "dimensions": {
+      "key": "M.DE.N.000000.4.ANR"
+    },
+    "note": "Auto-learned from dbnomics_series (Indices of Consumer prices)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_Eurostat_prc_hicp_manr_DE",
+    "keywords": [
+      "eurostat",
+      "prc_hicp_manr",
+      "de"
+    ],
+    "provider": "Eurostat",
+    "dataset": "prc_hicp_manr",
+    "dimensions": {
+      "geo": "DE"
+    },
+    "note": "Auto-learned from dbnomics_series (prc_hicp_manr)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_KSH_ara0045_",
+    "keywords": [
+      "ksh",
+      "ara0045",
+      "1.2.1.9.",
+      "eredeti,",
+      "illetve",
+      "szezonálisan",
+      "kiigazított",
+      "típusú",
+      "maginfláció,",
+      "havonta",
+      "[%]"
+    ],
+    "provider": "KSH",
+    "dataset": "ara0045",
+    "dimensions": {},
+    "note": "Auto-learned from dbnomics_series (1.2.1.9. Az eredeti, illetve a szezonálisan kiigazított új típusú maginfláció, havonta [%])",
+    "call_count": 8,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_ECB_ICP_M.HU.N.NRGY00.4.ANR",
+    "keywords": [
+      "ecb",
+      "icp",
+      "m.hu.n.nrgy00.4.anr",
+      "indices",
+      "consumer",
+      "prices"
+    ],
+    "provider": "ECB",
+    "dataset": "ICP",
+    "dimensions": {
+      "key": "M.HU.N.NRGY00.4.ANR"
+    },
+    "note": "Auto-learned from dbnomics_series (Indices of Consumer prices)",
+    "call_count": 2,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_Eurostat_sts_inpp_m_HU",
+    "keywords": [
+      "eurostat",
+      "sts_inpp_m",
+      "hu"
+    ],
+    "provider": "Eurostat",
+    "dataset": "sts_inpp_m",
+    "dimensions": {
+      "geo": "HU"
+    },
+    "note": "Auto-learned from dbnomics_series (sts_inpp_m)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_Eurostat_une_rt_m_HU_T_TOTAL_PC_ACT_SA",
+    "keywords": [
+      "eurostat",
+      "une_rt_m",
+      "hu",
+      "t",
+      "total",
+      "pc_act",
+      "sa"
+    ],
+    "provider": "Eurostat",
+    "dataset": "une_rt_m",
+    "dimensions": {
+      "geo": "HU",
+      "sex": "T",
+      "age": "TOTAL",
+      "unit": "PC_ACT",
+      "s_adj": "SA"
+    },
+    "note": "Auto-learned from dbnomics_series (une_rt_m)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_Eurostat_namq_10_gdp_HU_B1GQ_CLV_PCH_PRE_SCA",
+    "keywords": [
+      "eurostat",
+      "namq_10_gdp",
+      "hu",
+      "b1gq",
+      "clv_pch_pre",
+      "sca"
+    ],
+    "provider": "Eurostat",
+    "dataset": "namq_10_gdp",
+    "dimensions": {
+      "geo": "HU",
+      "na_item": "B1GQ",
+      "unit": "CLV_PCH_PRE",
+      "s_adj": "SCA"
+    },
+    "note": "Auto-learned from dbnomics_series (namq_10_gdp)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_Eurostat_prc_hicp_manr_EA",
+    "keywords": [
+      "eurostat",
+      "prc_hicp_manr",
+      "ea"
+    ],
+    "provider": "Eurostat",
+    "dataset": "prc_hicp_manr",
+    "dimensions": {
+      "geo": "EA"
+    },
+    "note": "Auto-learned from dbnomics_series (prc_hicp_manr)",
+    "call_count": 2,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_Eurostat_namq_10_gdp_HU_P3_S14_S15_CLV15_MEUR_SCA",
+    "keywords": [
+      "eurostat",
+      "namq_10_gdp",
+      "hu",
+      "p3_s14_s15",
+      "clv15_meur",
+      "sca"
+    ],
+    "provider": "Eurostat",
+    "dataset": "namq_10_gdp",
+    "dimensions": {
+      "geo": "HU",
+      "na_item": "P3_S14_S15",
+      "unit": "CLV15_MEUR",
+      "s_adj": "SCA"
+    },
+    "note": "Auto-learned from dbnomics_series (namq_10_gdp)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_Eurostat_namq_10_gdp_HU_P51G_CLV15_MEUR_SCA",
+    "keywords": [
+      "eurostat",
+      "namq_10_gdp",
+      "hu",
+      "p51g",
+      "clv15_meur",
+      "sca"
+    ],
+    "provider": "Eurostat",
+    "dataset": "namq_10_gdp",
+    "dimensions": {
+      "geo": "HU",
+      "na_item": "P51G",
+      "unit": "CLV15_MEUR",
+      "s_adj": "SCA"
+    },
+    "note": "Auto-learned from dbnomics_series (namq_10_gdp)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_Eurostat_namq_10_gdp_HU_P6_CLV15_MEUR_SCA",
+    "keywords": [
+      "eurostat",
+      "namq_10_gdp",
+      "hu",
+      "p6",
+      "clv15_meur",
+      "sca"
+    ],
+    "provider": "Eurostat",
+    "dataset": "namq_10_gdp",
+    "dimensions": {
+      "geo": "HU",
+      "na_item": "P6",
+      "unit": "CLV15_MEUR",
+      "s_adj": "SCA"
+    },
+    "note": "Auto-learned from dbnomics_series (namq_10_gdp)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_ECB_ICP_M.U2.N.XEF000.4.ANR",
+    "keywords": [
+      "ecb",
+      "icp",
+      "m.u2.n.xef000.4.anr",
+      "indices",
+      "consumer",
+      "prices"
+    ],
+    "provider": "ECB",
+    "dataset": "ICP",
+    "dimensions": {
+      "key": "M.U2.N.XEF000.4.ANR"
+    },
+    "note": "Auto-learned from dbnomics_series (Indices of Consumer prices)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_Eurostat_une_rt_m_EA21_T_TOTAL_PC_ACT_SA",
+    "keywords": [
+      "eurostat",
+      "une_rt_m",
+      "ea21",
+      "t",
+      "total",
+      "pc_act",
+      "sa"
+    ],
+    "provider": "Eurostat",
+    "dataset": "une_rt_m",
+    "dimensions": {
+      "geo": "EA21",
+      "sex": "T",
+      "age": "TOTAL",
+      "unit": "PC_ACT",
+      "s_adj": "SA"
+    },
+    "note": "Auto-learned from dbnomics_series (une_rt_m)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_ECB_ICP_M.U2.N.NRGY00.4.ANR",
+    "keywords": [
+      "ecb",
+      "icp",
+      "m.u2.n.nrgy00.4.anr",
+      "indices",
+      "consumer",
+      "prices"
+    ],
+    "provider": "ECB",
+    "dataset": "ICP",
+    "dimensions": {
+      "key": "M.U2.N.NRGY00.4.ANR"
+    },
+    "note": "Auto-learned from dbnomics_series (Indices of Consumer prices)",
+    "call_count": 1,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_ECB_ICP_M.U2.N.SERV00.4.ANR",
+    "keywords": [
+      "ecb",
+      "icp",
+      "m.u2.n.serv00.4.anr",
+      "indices",
+      "consumer",
+      "prices"
+    ],
+    "provider": "ECB",
+    "dataset": "ICP",
+    "dimensions": {
+      "key": "M.U2.N.SERV00.4.ANR"
+    },
+    "note": "Auto-learned from dbnomics_series (Indices of Consumer prices)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
+  },
+  {
+    "id": "auto_Eurostat_namq_10_gdp_HU_B1GQ_CLV15_MEUR_SCA",
+    "keywords": [
+      "eurostat",
+      "namq_10_gdp",
+      "hu",
+      "b1gq",
+      "clv15_meur",
+      "sca"
+    ],
+    "provider": "Eurostat",
+    "dataset": "namq_10_gdp",
+    "dimensions": {
+      "geo": "HU",
+      "na_item": "B1GQ",
+      "unit": "CLV15_MEUR",
+      "s_adj": "SCA"
+    },
+    "note": "Auto-learned from dbnomics_series (namq_10_gdp)",
+    "call_count": 0,
+    "last_used": null,
+    "source": "auto"
   }
 ]
