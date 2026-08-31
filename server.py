@@ -4477,6 +4477,92 @@ def _implausible(indicator: str, value, country: str = "") -> str:
     return ""
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# RESOLVER-EGESZSEG — A NEMA HALALESET KIABALJON
+# ══════════════════════════════════════════════════════════════════════════
+#
+# MIERT (2026-08-31): ket resolver HONAPOK OTA halott volt, es senki nem vette
+# eszre, mert a lanc CSENDBEN tovabbesett a kovetkezo forrasra:
+#   `_resolver_dbnomics` — MINDEN hivasra TypeError ("unexpected keyword
+#                          argument 'max_obs'"), tehat a tipus soha nem adott
+#                          adatot;
+#   `_resolver_oecd`     — MINDIG ures (rossz kulcssorrend + rossz JSON-alak).
+# Mindketto csak akkor derult ki, amikor VALAKI RANEZETT az `all_attempts`
+# mezore. Ez nem skalazodik.
+#
+# A megfigyeles maga OLCSO: az `all_attempts` mar most osztalyozza minden
+# probalkozas kimenetet. Csak osszegezni kell egy gorgo ablakban — es akkor a
+# "100%-ban bukik" allapot MAGATOL kiabal, ember nelkul.
+#
+# ⚠️ AMIT EZ NEM TUD: a hihetonek latszo ROSSZ erteket. A `HU/gov_debt = 28.4`
+# (a valos 77.7 helyett) es a `49,343 -> 49.343` ebben a statisztikaban
+# TOKELETES `ok`-kent jelenne meg. Erre nem telemetria kell, hanem kimondott
+# elvaras (egyseg, hihetosegi sav) — az mar megvan. A ketto MAS hibaosztaly.
+from collections import deque as _deque
+
+_RESOLVER_HEALTH: dict[str, _deque] = {}
+_HEALTH_WINDOW = 50
+
+
+def _health_record(rtype: str, outcome: str) -> None:
+    """Egy probalkozas kimenetenek rogzitese. Sose dob, sose lassit."""
+    try:
+        d = _RESOLVER_HEALTH.get(rtype)
+        if d is None:
+            d = _RESOLVER_HEALTH[rtype] = _deque(maxlen=_HEALTH_WINDOW)
+        d.append(outcome)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _health_report() -> dict:
+    """{resolver: {n, ok, ures, hiba, fojtva, allapot}} + emberi osszefoglalo."""
+    sorok = {}
+    riasztas = []
+    for rtype, d in sorted(_RESOLVER_HEALTH.items()):
+        n = len(d)
+        if not n:
+            continue
+        ok = sum(1 for x in d if x == "ok")
+        ures = sum(1 for x in d if x == "empty")
+        hiba = sum(1 for x in d if x == "error")
+        fojt = sum(1 for x in d if x == "rate_limited")
+        # ⚠️ KEVES MINTABOL NEM ALLITUNK. Egy resolver, amit haromszor hivtunk
+        # meg, nem "halott" — csak meg nem tudjuk. A hiany bevallasa is valasz.
+        if n < 5:
+            allapot = "kevés minta"
+        elif hiba == n:
+            allapot = "HALOTT — minden hívás kivétellel végződik"
+            riasztas.append(f"{rtype}: {n}/{n} kivétel")
+        elif ok == 0 and ures == n:
+            allapot = "HALOTT — mindig üresen tér vissza"
+            riasztas.append(f"{rtype}: {n}/{n} üres, egyszer sem adott adatot")
+        elif ok == 0:
+            allapot = "HALOTT — egyszer sem adott adatot"
+            riasztas.append(f"{rtype}: {n} hívás, 0 találat")
+        elif ok / n < 0.2:
+            allapot = f"gyenge — {ok}/{n} találat"
+            riasztas.append(f"{rtype}: csak {ok}/{n} hívás adott adatot")
+        else:
+            allapot = "rendben"
+        sorok[rtype] = {"n": n, "ok": ok, "ures": ures, "hiba": hiba,
+                        "fojtva": fojt, "allapot": allapot}
+    return {
+        "ablak": _HEALTH_WINDOW,
+        "resolverek": sorok,
+        "riasztasok": riasztas,
+        "osszefoglalo": (
+            "Minden resolver ad adatot." if not riasztas else
+            f"{len(riasztas)} resolver nem ad adatot: " + " · ".join(riasztas)
+        ),
+        "figyelmeztetes": (
+            "Ez a jelentés csak a NÉMA KIESÉST fogja meg (kivétel, üres válasz, "
+            "fojtás). A hihetőnek látszó ROSSZ értéket NEM: az itt `ok`-ként "
+            "jelenik meg. Arra a mértékegység-mező és a hihetőségi sáv való."
+        ),
+    }
+
+
 def _snap_to_business_day(d):
     """Hetvegerol a MEGELOZO munkanapra igazitas.
 
@@ -7228,10 +7314,24 @@ INDICATOR_RESOLVERS[("CA", "cpi")] = [
 # Merve 2026-08-30 EGY hivasbol: JP 1.0 · CA 2.25 · AU 4.35 · GB 3.75 ·
 # XM (EKB) 2.25 · HU 5.75 — mind 2026-07. A dbnomics-tukor ugyanerre
 # 2025-osoket ad.
-for _cc, _bis in (("JP", "JP"), ("CA", "CA"), ("AU", "AU"), ("GB", "GB")):
+# ELOL: ahol nincs jobb nemzeti forras. Merve 2026-08-31, mind 2026-07:
+#   PL 3.75 · SE 1.75 · DK 1.85 · RO 6.5 · NO 4.25 · JP 1.0 · CA 2.25 ·
+#   AU 4.35 · GB 3.75 · CN 3.0 · TR 37.0
+# ⚠️ A svedre a web-kereses 2.25-ot adott — az az EKB kamata, nem a Riksbanke.
+for _cc in ("JP", "CA", "AU", "GB", "PL", "SE", "DK", "RO", "NO", "TR"):
     _k = (_cc, "policy_rate")
-    _sp = {"type": "bis_direct", "area": _bis}
-    INDICATOR_RESOLVERS[_k] = [_sp] + (INDICATOR_RESOLVERS.get(_k) or [])
+    _sp = {"type": "bis_direct", "area": _cc}
+    _m = [r for r in (INDICATOR_RESOLVERS.get(_k) or []) if r.get("type") != "bis_direct"]
+    INDICATOR_RESOLVERS[_k] = [_sp] + _m
+
+# HATRA: ahol VAN kozvetlen nemzeti forras. A BIS HAVI, ezert egy friss
+# kamatdontes utan lemarad — merve: BIS HU 5.75 @ 2026-07, de az MNB
+# 2026-08-25-en 5.5-re vagott. A nemzeti scrape marad elol, a BIS a halo.
+for _cc in ("HU", "CZ", "CH"):
+    _k = (_cc, "policy_rate")
+    _m = [r for r in (INDICATOR_RESOLVERS.get(_k) or []) if r.get("type") != "bis_direct"]
+    if _m:
+        INDICATOR_RESOLVERS[_k] = _m + [{"type": "bis_direct", "area": _cc}]
 
 # ══════════════════════════════════════════════════════════════════════════
 # JAPAN, KINA — A NAGY GAZDASAGOK NEM LEHETNEK "NINCS ADAT"
@@ -7317,6 +7417,53 @@ for _ind, _rx in (
         # 2026-08-31-kent, "mai adat"-kent kerulne a briefbe.
         "period_rx": _TW_LABEL[_ind] + r"[\s\S]{0,120}?([A-Z][a-z]{2})\.?\s+(\d{4})",
     }]
+
+# ══════════════════════════════════════════════════════════════════════════
+# NYELVTERULETI KIADASOK — MINDEN OLVASOT A SAJATJA ERDEKLI
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Kommandant, 2026-08-31: "a magyarra vonatkozó politikai és gazdasági adatok
+# nem fognak egy törököt érdekelni — vagy épp egy olaszt. Őt a sajátja
+# érdekelné."
+#
+# Ez nem forditasi kerdes, hanem ADAT-kerdes: 12 nyelvu kiadashoz 12 orszag
+# HAZAI szama kell. Merve 2026-08-31: a `unemployment` a legtobb europai
+# orszagra `brave_search`-ig esett, "idoszaknak" a MAI datummal — es a szam
+# rossz is volt: Gorogorszagra 6.2 jott, az Eurostat hivatalos szama 8.0.
+#
+# Az `une_rt_m` MINDET adja, hitelesen es egyseges definicioval (aktiv
+# nepesseg %-a, szezonalisan kiigazitva). Merve: DE 3.9 · FR 8.2 · IT 5.7 ·
+# ES 10.1 · EL 8.0 · PL 3.1 · HU 4.5, mind 2026-06.
+#
+# ⚠️ GEO-KOD: Gorogorszag az Eurostatban "EL", NEM "GR".
+_EUROSTAT_GEO = {"GR": "EL", "GB": "UK"}
+
+for _cc in _EUROSTAT_PRESS_COUNTRIES:
+    _k = (_cc, "unemployment")
+    _sp = {"type": "eurostat", "dataset_code": "une_rt_m",
+           "geo": _EUROSTAT_GEO.get(_cc, _cc),
+           "filters": "unit=PC_ACT&s_adj=SA&age=TOTAL&sex=T"}
+    # ⚠️ AZ ELSO VALTOZATOM ITT BUKOTT: "ha mar van une_rt_m, ne nyulj hozza".
+    # Gorogorszagra VOLT egy regi bejegyzes — de `geo=GR`-rel, ami az
+    # Eurostatban NEM LETEZIK (ott EL). Az orfeltetel igy pont a HIBAS sort
+    # vedte meg, es a lanc uresen esett tovabb a web-keresesre (6.2 a valos
+    # 8.0 helyett). A "mar van ilyen" nem jelenti azt, hogy JO.
+    # Ezert: a MERT spec mindig elore kerul, es a regi duplikatumot kiszedjuk.
+    _m = [r for r in (INDICATOR_RESOLVERS.get(_k) or [])
+          if not (r.get("dataset_code") == "une_rt_m")]
+    INDICATOR_RESOLVERS[_k] = [_sp] + _m
+
+# ── EUROZONA: A TAGORSZAGNAK NINCS SAJAT ALAPKAMATA ───────────────────────
+# Nemetorszagnak, Franciaorszagnak, Olaszorszagnak nincs onallo jegybanki
+# alapkamata — az EKB-e ervenyes rajuk. Eddig ezek a parok URESEN tertek
+# vissza, mintha az adat hianyozna; pedig NEM hianyzik, csak nem sajat.
+# A forras-cimke ezt KI IS MONDJA, hogy egy olvaso ne higgye nemzetinek.
+_EUROZONA = ("DE", "FR", "IT", "ES", "GR", "NL", "BE", "AT", "PT", "IE", "FI",
+             "SK", "SI", "LT", "LV", "EE", "LU", "CY", "MT", "HR", "BG")
+for _cc in _EUROZONA:
+    _k = (_cc, "policy_rate")
+    if not INDICATOR_RESOLVERS.get(_k):
+        INDICATOR_RESOLVERS[_k] = list(INDICATOR_RESOLVERS.get(("EA", "policy_rate"), []))
 
 # Component-label mapping: indicator → markdown bold label in press release
 _EUROSTAT_PRESS_LABELS: dict[str, str] = {
@@ -7973,6 +8120,7 @@ async def get_macro_indicator(
         rtype = spec.get("type")
         fn = _RESOLVERS.get(rtype)
         if not fn:
+            _health_record(rtype, "no_resolver")
             attempts.append({"resolver": rtype, "outcome": "no_resolver"})
             continue
         # A resolver TUDJA MEG, hogy konkret idoszakot keresunk — igy tagabb
@@ -7983,6 +8131,7 @@ async def get_macro_indicator(
             result = await fn(spec_eff)
         except Exception as e:
             logger.warning("Resolver %s failed: %s", rtype, e)
+            _health_record(rtype, "error")
             attempts.append({"resolver": rtype, "outcome": "error", "error": str(e)[:200]})
             continue
         if not result or result.get("value") is None:
@@ -7995,6 +8144,7 @@ async def get_macro_indicator(
             _low = _ok.lower()
             _fojtva = ("429" in _ok or "403" in _ok or "rate limit" in _low
                        or "access denied" in _low or "too many" in _low)
+            _health_record(rtype, "rate_limited" if _fojtva else "empty")
             attempts.append({"resolver": rtype,
                              "outcome": "rate_limited" if _fojtva else "empty",
                              **({"detail": _ok[:120]} if _ok else {})})
@@ -8007,6 +8157,7 @@ async def get_macro_indicator(
         if _baj:
             logger.warning("Resolver %s (%s/%s) ELUTASITVA: %s",
                            rtype, country, indicator, _baj)
+            _health_record(rtype, "error")     # rossz mertekegyseg = hasznalhatatlan
             attempts.append({"resolver": rtype, "outcome": "implausible",
                              "value": result.get("value"), "reason": _baj})
             continue
@@ -8026,6 +8177,7 @@ async def get_macro_indicator(
             hit = next((x for x in ts if str(x.get("period")) == want_period), None)
             if hit is None and got_period == want_period:
                 hit = {"period": got_period, "value": result["value"]}
+            _health_record(rtype, "ok" if hit else "empty")
             attempts.append({
                 "resolver": rtype, "outcome": "ok" if hit else "no_such_period",
                 "period": got_period, "series_len": len(ts),
@@ -8059,6 +8211,7 @@ async def get_macro_indicator(
 
         period = got_period
         fresh = _is_fresh(period, threshold)
+        _health_record(rtype, "ok")
         attempts.append({
             "resolver": rtype, "outcome": "ok",
             "value": result["value"], "period": period, "fresh": fresh,
@@ -8774,11 +8927,40 @@ async def get_macro_panel(
     }, ensure_ascii=False, indent=2)
 
 
+@mcp.tool()
+async def resolver_health() -> str:
+    """Melyik adatforrás NEM ad adatot — önvizsgálat, emberi ránézés nélkül.
+
+    MIÉRT LÉTEZIK: 2026-08-31-én kiderült, hogy KÉT resolver hónapok óta halott
+    volt, és senki nem vette észre, mert a lánc CSENDBEN továbbesett a
+    következő forrásra — a hívó kapott egy értéket, csak épp egy rosszabb
+    forrásból. A `dbnomics` minden hívásra kivételt dobott (rossz
+    paraméternév), az `oecd` mindig üresen tért vissza (rossz kulcssorrend +
+    rossz JSON-alak). Mindkettő csak akkor derült ki, amikor valaki KÉZZEL
+    ránézett az `all_attempts` mezőre. Ez nem skálázódik.
+
+    A `get_macro_indicator` minden próbálkozását osztályozzuk (ok / üres /
+    kivétel / fojtva) egy 50 hívásos gördülő ablakban. Ez a tool összegzi.
+
+    ⚠️ AMIT NEM FOG MEG: a hihetőnek látszó ROSSZ értéket. Egy `gov_debt=28.4`
+    (a valós 77.7 helyett) itt tökéletes `ok`-ként jelenik meg. Arra nem
+    telemetria kell, hanem kimondott elvárás — mértékegység-mező és
+    hihetőségi sáv. Más hibaosztály, más eszköz.
+
+    Returns:
+        JSON: `resolverek` (típusonként n/ok/üres/hiba/fojtva/állapot),
+        `riasztasok` (amelyik egyszer sem adott adatot), `osszefoglalo`.
+        Üres ablak = a szerver indulása óta még nem volt elég hívás.
+    """
+    return json.dumps(_health_report(), ensure_ascii=False, indent=2)
+
+
 # ---------------------------------------------------------------------------
 # REST API — for Bridge / external clients to invoke tools without MCP plumbing
 # ---------------------------------------------------------------------------
 _API_TOOL_DISPATCH = {
     "get_macro_panel": get_macro_panel,
+    "resolver_health": resolver_health,
     "search_datasets": search_datasets,
     "get_eurostat_data": get_eurostat_data,
     "get_ksh_hvd": get_ksh_hvd,
