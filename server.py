@@ -7096,6 +7096,9 @@ async def _resolver_brave_search(spec: dict) -> Optional[dict]:
 # Module-level cache for scrape results — press release URLs are immutable,
 # scraping them once per session is enough.
 _SCRAPE_CACHE: dict[tuple[str, str], dict] = {}
+# a NEGATÍV (üres) találat csak ennyi ideig érvényes: a még meg nem jelent
+# közlemény URL-je később élővé válik (2026-10-05)
+_SCRAPE_NEG_TTL_S = float(os.environ.get("SCRAPE_NEG_TTL_S", str(3 * 3600)))
 
 # Cache for parsed Eurostat press release tables (URL → markdown text).
 _EUROSTAT_PRESS_MARKDOWN_CACHE: dict[str, str] = {}
@@ -7911,8 +7914,14 @@ async def _resolver_eurostat_press(spec: dict) -> Optional[dict]:
             cached = _SCRAPE_CACHE.get(cache_key)
             if cached is not None:
                 if cached.get("_empty"):
-                    continue
-                return {"period": period, **cached}
+                    # ⛔ 2026-10-05: az üres bejegyzés eddig ÖRÖK volt — a MÉG MEG NEM
+                    # JELENT közlemény URL-je (pl. a szeptemberi, a megjelenése előtt
+                    # próbálva) a folyamat élete végéig „üres" maradt, így a HU cpi a
+                    # 08-19-i közlemény JÚLIUSÁN ragadt, és csak újraindítás oldotta.
+                    if time.time() - cached.get("_t", 0) < _SCRAPE_NEG_TTL_S:
+                        continue
+                else:
+                    return {"period": period, **cached}
             try:
                 result = await _scrape_extract_value(url, rx)
             except Exception:
@@ -7938,7 +7947,7 @@ async def _resolver_eurostat_press(spec: dict) -> Optional[dict]:
                 _SCRAPE_CACHE[cache_key] = entry
                 return {"period": period, **entry}
             else:
-                _SCRAPE_CACHE[cache_key] = {"_empty": True}
+                _SCRAPE_CACHE[cache_key] = {"_empty": True, "_t": time.time()}
         return None
 
     if historical:

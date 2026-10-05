@@ -60,3 +60,12 @@ def test_a_leheto_legfrissebbnel_nincs_elorenezes_es_webkereses_sosem(monkeypatc
                  {"t_a": {"value": 1.6, "period": _ho(3), "source": "A"},
                   "brave_search": {"value": 1.0, "period": _ho(1), "source": "web"}}, h2)
     assert d2["source_used"] == "A" and h2 == ["t_a"], "hivatalos friss után webkeresés nem írhatja felül"
+
+
+def test_ures_kozlemeny_bejegyzes_lejar(monkeypatch):
+    """A még meg nem jelent közlemény üres bejegyzése nem örök (élesben: HU cpi JÚLIUSON ragadt)."""
+    import time as _t
+    src = open(server.__file__, encoding="utf-8").read()
+    assert '{"_empty": True, "_t": time.time()}' in src
+    assert "time.time() - cached.get(\"_t\", 0) < _SCRAPE_NEG_TTL_S" in src
+    assert server._SCRAPE_NEG_TTL_S <= 6 * 3600
