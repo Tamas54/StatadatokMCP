@@ -8539,9 +8539,23 @@ async def get_macro_indicator(
     _rate_limited: list[str] = []      # mely resolvereket fojtottak meg
     attempts: list[dict] = []
     best_stale: Optional[dict] = None  # freshest stale value found across the chain
+    # ══ A LEGÚJABB IDŐSZAK NYER, NEM AZ ELSŐ FRISS (2026-10-05) ═════════════
+    # Mérve (Kommandant: „a statdata nem szolgáltatja az adatot, csak 07 az
+    # infláció"): a HU cpi-re az `eurostat_press` a 08-19-i közlemény JÚLIUSÁT
+    # adta (1,6%), ami a 85 napos ablakon belül „friss" — a lánc megállt, és
+    # „TÉNYLEGES legfrissebb"-ként szolgálta, miközben a `ksh_flash` már az
+    # AUGUSZTUST hozta (1,3%, far2608). Az első friss találat után a többi
+    # HIVATALOS forrást is megnézzük (időkerettel; webkeresés nem), és a
+    # legújabb időszak nyer — egyező időszaknál a lánc sorrendje.
+    best_fresh: Optional[dict] = None
+    _lanc_t0 = time.monotonic()
+    _ELORENEZES_S = float(os.environ.get("MACRO_LOOKAHEAD_BUDGET_S", "12"))
 
     for spec in chain:
         rtype = spec.get("type")
+        if best_fresh is not None and (not best_fresh["tovabb"] or rtype == "brave_search"
+                                       or time.monotonic() - _lanc_t0 > _ELORENEZES_S):
+            continue
         fn = _RESOLVERS.get(rtype)
         if not fn:
             _health_record(rtype, "no_resolver")
@@ -8559,7 +8573,15 @@ async def get_macro_indicator(
         # utemet; ahol nem, marad a mutato alapertelmezese.
         spec_threshold = spec.get("freshness_days") or threshold
         try:
-            result = await fn(spec_eff)
+            if best_fresh is not None:
+                # előrenézés: a már FUTÓ forrás is az időkereten belül marad
+                _maradt = max(1.0, _ELORENEZES_S - (time.monotonic() - _lanc_t0))
+                result = await asyncio.wait_for(fn(spec_eff), timeout=_maradt)
+            else:
+                result = await fn(spec_eff)
+        except asyncio.TimeoutError:
+            attempts.append({"resolver": rtype, "outcome": "lookahead_timeout"})
+            continue
         except Exception as e:
             logger.warning("Resolver %s failed: %s", rtype, e)
             _health_record(rtype, "error")
@@ -8716,7 +8738,14 @@ async def get_macro_indicator(
                     out_payload[key] = result[key]
             if methodology_note:
                 out_payload["methodology_note"] = methodology_note
-            return json.dumps(out_payload, ensure_ascii=False, indent=2)
+            _uj = _parse_period_to_date(period)
+            if best_fresh is None or (_uj and best_fresh["_d"] and _uj > best_fresh["_d"]):
+                # tovább csak akkor nézünk, ha lehet újabb: a ~40 napnál frissebb
+                # időszak (napi adat, ill. a múlt havi havi adat) a lehető legújabb
+                from datetime import datetime as _dtm
+                _kor = (_dtm.now() - _uj.replace(tzinfo=None)).days if _uj else 999
+                best_fresh = {"_d": _uj, "payload": out_payload, "tovabb": _kor > 40}
+            continue
         # Stale but valid — keep as best fallback
         dt = _parse_period_to_date(period)
         if dt and (not best_stale or _parse_period_to_date(best_stale["period"]) < dt):
@@ -8725,6 +8754,12 @@ async def get_macro_indicator(
                 "source": result.get("source", rtype),
                 "source_url": result.get("source_url"),
             }
+
+    if best_fresh is not None:
+        out_payload = best_fresh["payload"]
+        out_payload["fallback_chain"] = [a["resolver"] for a in attempts]
+        out_payload["all_attempts"] = attempts
+        return json.dumps(out_payload, ensure_ascii=False, indent=2)
 
     if best_stale:
         return json.dumps({
