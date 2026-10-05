@@ -9476,6 +9476,67 @@ async def resolver_health() -> str:
 
 
 # ---------------------------------------------------------------------------
+# MAGYAR ORSZÁGGYŰLÉS (2026-10-05) — EGY eszköz, `muvelet` paraméterrel
+# ---------------------------------------------------------------------------
+# A Parlamentáris Kompendium (parlamenti-production) adatai: ki kicsoda, melyik
+# bizottság tagja, ki mivel foglalkozott. A parlament.hu a szerver-IP-kre CAPTCHA-t
+# ad, ezért az adatot egy helyi frissítő tölti fel 3 óránként; ez az eszköz a
+# kompendium közös eszköz-végpontját hívja (`/api/eszkoz/<név>`).
+PARLAMENTI_URL = os.environ.get("PARLAMENTI_URL", "https://parlamenti-production.up.railway.app").rstrip("/")
+_PARL_MUVELET = {
+    "kepviselo": ("kepviselo_adatok", "nev"),
+    "bizottsag": ("bizottsag_tagjai", "bizottsag"),
+    "tevekenyseg": ("kepviselo_tevekenyseg", "nev"),
+    "tema": ("ki_foglalkozott", "tema"),
+    "felszolalas": ("felszolalas_kereses", "szoveg"),
+}
+
+
+@mcp.tool()
+async def parlament(muvelet: str, q: str, reszletek: str = "temak", limit: int = 15) -> str:
+    """MAGYAR ORSZÁGGYŰLÉS — ki kicsoda, ki mivel foglalkozott (parlament.hu adatai, a ciklus
+    egészére: felszólalások, önálló indítványok, módosító javaslatok; 3 óránként frissítve).
+
+    Args:
+        muvelet: "kepviselo"   — név → frakció, választókerület, tisztségek, JELENLEGI
+                                 bizottsági tagságok, rövid tevékenység (nem képviselő
+                                 felszólalót, pl. kormánytagot is megjelölve hoz)
+                 "bizottsag"   — bizottság neve/kódja → jelenlegi tagok tisztséggel
+                 "tevekenyseg" — név → mivel foglalkozott: súlyozott témák, indítványok,
+                                 módosítók, felszólalások (lásd `reszletek`)
+                 "tema"        — kulcsszó → KIK foglalkoztak vele, rangsorolva
+                 "felszolalas" — szöveg → keresés a felszólalások SZÖVEGÉBEN (ha a
+                                 parlament.hu épp nem enged, kimondja, és a témákban keres)
+        q: a név, a bizottság, a téma vagy a keresett szöveg (ékezet nélkül is)
+        reszletek: csak "tevekenyseg"-nél: "temak" | "inditvanyok" | "modositok" |
+                   "felszolalasok" | "mind"
+        limit: listák hossza (alap 15)
+
+    Returns:
+        JSON a forrás frissítési idejével és parlament.hu-mélylinkekkel.
+    """
+    m = _PARL_MUVELET.get((muvelet or "").strip().lower())
+    if not m:
+        return json.dumps({"error": f"ismeretlen muvelet: {muvelet}", "muveletek": sorted(_PARL_MUVELET)},
+                          ensure_ascii=False)
+    eszkoz, kulcs = m
+    params = {kulcs: q}
+    if eszkoz == "kepviselo_tevekenyseg":
+        params.update(reszletek=reszletek, limit=limit)
+    elif eszkoz in ("ki_foglalkozott", "felszolalas_kereses"):
+        params["limit"] = limit
+    try:
+        client = await get_client()
+        r = await client.get(f"{PARLAMENTI_URL}/api/eszkoz/{eszkoz}", params=params, timeout=60.0)
+        r.raise_for_status()
+        return json.dumps(r.json(), ensure_ascii=False, indent=2)
+    except Exception as e:  # noqa: BLE001
+        return json.dumps({"error": f"a parlamenti kompendium nem válaszolt: {e}",
+                           "agent_instruction": "NE találj ki adatot; mondd ki, hogy a forrás most nem elérhető."},
+                          ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
 # REST API — for Bridge / external clients to invoke tools without MCP plumbing
 # ---------------------------------------------------------------------------
 # ⚠️ KET REGISZTER, KETTOT KELL TOLTENI. A `@mcp.tool()` az MCP-utat nyitja
@@ -9504,6 +9565,7 @@ _API_TOOL_DISPATCH = {
     "get_flash_releases": get_flash_releases,
     "get_macro_indicator": get_macro_indicator,
     "statdata_help": statdata_help,
+    "parlament": parlament,
 }
 
 
